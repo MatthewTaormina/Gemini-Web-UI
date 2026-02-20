@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     last_login_at TIMESTAMP WITH TIME ZONE,
     password_last_set_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP WITH TIME ZONE
+    deleted_at TIMESTAMP WITH TIME ZONE,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
 -- Roles table
@@ -26,7 +27,8 @@ CREATE TABLE IF NOT EXISTS roles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(100) UNIQUE NOT NULL,
     description TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
 -- Permissions table
@@ -36,7 +38,8 @@ CREATE TABLE IF NOT EXISTS permissions (
     action VARCHAR(50) NOT NULL,       -- create, read, update, delete
     resource VARCHAR(50) NOT NULL,     -- users, roles, etc.
     description TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
 -- Role-Permissions Junction
