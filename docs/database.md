@@ -17,6 +17,7 @@ Stores user account information and authentication state.
 | `username` | VARCHAR(255) | Unique login name |
 | `password_hash` | TEXT | Argon2 or BCrypt hash of the password |
 | `role` | VARCHAR(50) | User role (e.g., 'admin', 'user') |
+| `is_root` | BOOLEAN | Flag for the system root user (Default: false) |
 | `enabled` | BOOLEAN | Account status (Default: true) |
 | `failed_login_attempts` | INTEGER | Counter for security lockout (Default: 0) |
 | `lockout_until` | TIMESTAMP | Timestamp until which login is barred |
@@ -26,7 +27,10 @@ Stores user account information and authentication state.
 | `password_last_set_at` | TIMESTAMP | Last time the password was changed |
 | `deleted_at` | TIMESTAMP | Soft delete timestamp (NULL if active) |
 
-## Relationships
+## Constraints
+- **Singleton Root**: Only one user can have `is_root = true`.
+- **Immutable Root**: The root user cannot be deleted (either hard or soft delete).
+- **RBAC**: All non-root users operate under Role-Based Access Control. Root bypasses all checks.
 ```mermaid
 erDiagram
     USERS {

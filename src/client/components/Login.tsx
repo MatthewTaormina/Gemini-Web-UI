@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 
 interface LoginProps {
-  onLogin: (username: string) => void;
+  onLogin: (username: string, isRoot: boolean) => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
@@ -25,7 +25,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
       const data = await response.json();
 
       if (response.ok && data.success) {
-        onLogin(data.username);
+        onLogin(data.username, data.is_root);
         navigate('/');
       } else {
         setError(data.error || 'Invalid username or password');
