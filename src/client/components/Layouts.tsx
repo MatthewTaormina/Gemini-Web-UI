@@ -72,6 +72,7 @@ export const MainLayout: React.FC<{ username: string | null; onLogout: () => voi
         <div className="nav-links">
           {username ? (
             <>
+              <Link to="/chat" style={{ marginRight: '1rem' }}>Chat</Link>
               {hasDashboardAccess && <Link to="/dashboard">Dashboard</Link>}
               <span style={{ marginLeft: '1rem', color: '#718096' }}>{username}</span>
               <button 

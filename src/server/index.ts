@@ -1,13 +1,14 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+dotenv.config();
+
 import pg from 'pg';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
-
-dotenv.config();
+import chatRouter from './apps/chat/ChatRouter.js';
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -338,6 +339,16 @@ app.post('/api/logout', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Logout failed' });
   }
 });
+
+// Chat App Routes
+app.use('/api/chat', authenticateToken, (req, res, next) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (hasPermission(user, 'read', 'chat') || hasPermission(user, 'write', 'chat')) {
+    next();
+  } else {
+    res.status(403).json({ error: 'Unauthorized' });
+  }
+}, chatRouter);
 
 // Admin Role Management Endpoints
 app.get('/api/admin/roles', authenticateToken, async (req, res) => {

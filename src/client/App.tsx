@@ -7,6 +7,7 @@ import Setup from './components/Setup.js';
 import UserManagement from './components/UserManagement.js';
 import RoleManagement from './components/RoleManagement.js';
 import PermissionManagement from './components/PermissionManagement.js';
+import ChatApp from './apps/chat/ChatApp.js';
 import { MainLayout, DashboardLayout } from './components/Layouts.js';
 import './App.css';
 
@@ -99,6 +100,16 @@ function App() {
                   ) : (
                     <Navigate to="/login" />
                   )
+                )
+              } 
+            />
+            <Route 
+              path="/chat" 
+              element={
+                user ? (
+                  <ChatApp token={token} />
+                ) : (
+                  <Navigate to="/login" />
                 )
               } 
             />
