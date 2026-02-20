@@ -3,6 +3,7 @@ import pg from 'pg';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs/promises';
+import { v4 as uuidv4 } from 'uuid';
 
 dotenv.config();
 
@@ -152,18 +153,63 @@ export class ChatService {
 
     console.log("Gemini Raw Result:", JSON.stringify(result, null, 2));
 
-    const responseText = result.text || "No response received.";
+    const candidate = result.candidates?.[0];
+    const responseParts = candidate?.content?.parts || [];
+    
+    let combinedText = '';
+    const generatedAttachments: any[] = [];
+
+    for (const part of responseParts) {
+      if (part.text) {
+        combinedText += part.text;
+      } else if (part.inlineData) {
+        const data = Buffer.from(part.inlineData.data, 'base64');
+        const ext = part.inlineData.mimeType.split('/')[1] || 'png';
+        const filename = `gen-${uuidv4()}.${ext}`;
+        const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
+        const filePath = path.join(uploadDir, filename);
+        
+        await fs.writeFile(filePath, data);
+        
+        generatedAttachments.push({
+          file_name: filename,
+          file_path: filePath,
+          file_type: part.inlineData.mimeType,
+          file_size: data.length
+        });
+      }
+    }
+
+    const finalResponseText = combinedText || (generatedAttachments.length > 0 ? '' : 'No response received.');
 
     // Save model response
-    await pool.query(
-      "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
-      [conversationId, 'model', responseText]
+    const modelMsgRes = await pool.query(
+      "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
+      [conversationId, 'model', finalResponseText]
     );
+    const modelMessageId = modelMsgRes.rows[0].id;
+
+    // Save generated attachments
+    for (const att of generatedAttachments) {
+      await pool.query(
+        "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
+        [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
+      );
+    }
 
     // Update conversation timestamp
     await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
 
-    return responseText;
+    // Fetch the newly created attachments for the response
+    const attachmentsRes = await pool.query(
+      "SELECT id, file_name, file_type, file_size FROM attachments WHERE message_id = $1",
+      [modelMessageId]
+    );
+
+    return { 
+      response: finalResponseText, 
+      attachments: attachmentsRes.rows 
+    };
   }
 
   async deleteConversation(conversationId: string, userId: string) {

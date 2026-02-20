@@ -502,3 +502,51 @@
     40% { transform: scale(1.0); }
 }
 
+/* Image Attachments */
+.image-attachment-wrapper {
+    margin-top: 0.5rem;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #e2e8f0;
+    background: #f8fafc;
+    max-width: 400px;
+    transition: all 0.2s;
+}
+
+.image-attachment-wrapper:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.message-image {
+    width: 100%;
+    height: auto;
+    max-height: 500px;
+    object-fit: contain;
+    display: block;
+    cursor: pointer;
+    background-color: #f1f5f9;
+}
+
+.image-info {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    color: #64748b;
+    border-top: 1px solid #e2e8f0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    background: #fff;
+}
+
+.user .image-attachment-wrapper {
+    border-color: rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.1);
+}
+
+.user .image-info {
+    color: rgba(255,255,255,0.8);
+    border-top-color: rgba(255,255,255,0.2);
+    background: transparent;
+}
+

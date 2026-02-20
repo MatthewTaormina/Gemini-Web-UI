@@ -63,14 +63,14 @@ router.post('/conversations/:id/messages', upload.array('files'), async (req: an
     const userId = req.user.id;
     const { content } = req.body;
     const files = (req.files as Express.Multer.File[] || []).map(f => ({
-      filename: f.originalname,
+      filename: f.filename,
       path: f.path,
       mimetype: f.mimetype,
       size: f.size
     }));
 
-    const response = await chatService.sendMessage(req.params.id, userId, content, files);
-    res.json({ response });
+    const result = await chatService.sendMessage(req.params.id, userId, content, files);
+    res.json(result);
   } catch (err: any) {
     console.error(`Error in chat route:`, err);
     res.status(500).json({ error: err.message });

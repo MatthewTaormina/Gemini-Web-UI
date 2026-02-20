@@ -26,10 +26,12 @@ interface Conversation {
 
 const AVAILABLE_MODELS = [
     { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro' },
+    { id: 'gemini-3.1-pro-image', name: 'Gemini 3.1 Pro Image' },
     { id: 'gemini-3-pro', name: 'Gemini 3 Pro' },
     { id: 'gemini-3-flash', name: 'Gemini 3 Flash' },
     { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
     { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+    { id: 'gemini-2.5-flash-image', name: 'Gemini 2.5 Flash Image' },
 ];
 
 export default function ChatApp({ token, onLogout }: { token: string, onLogout: () => void }) {
@@ -150,15 +152,9 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
                 body: formData
             });
             if (res.status === 401 || res.status === 403) return onLogout();
-            const data = await res.json();
             
-            const modelMessage: Message = {
-                id: (Date.now() + 1).toString(),
-                role: 'model',
-                content: data.response,
-                created_at: new Date().toISOString()
-            };
-            setMessages(prev => [...prev, modelMessage]);
+            // Refresh messages to get the real ones with attachments and IDs
+            await fetchMessages(currentConversation.id);
         } catch (error) {
             console.error('Failed to send message:', error);
         } finally {
@@ -239,8 +235,24 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
                                         {msg.attachments && msg.attachments.length > 0 && (
                                             <div className="message-attachments">
                                                 {msg.attachments.map(att => (
-                                                    <div key={att.id} className="attachment-badge">
-                                                        📎 {att.file_name} ({Math.round(att.file_size / 1024)}KB)
+                                                    <div key={att.id} className="attachment-item">
+                                                        {att.file_type.startsWith('image/') ? (
+                                                            <div className="image-attachment-wrapper">
+                                                                <img 
+                                                                    src={`/uploads/${att.file_name}`} 
+                                                                    alt={att.file_name} 
+                                                                    className="message-image" 
+                                                                    onClick={() => window.open(`/uploads/${att.file_name}`, '_blank')}
+                                                                />
+                                                                <div className="image-info">
+                                                                    {att.file_name} ({Math.round(att.file_size / 1024)}KB)
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="attachment-badge">
+                                                                📎 {att.file_name} ({Math.round(att.file_size / 1024)}KB)
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 ))}
                                             </div>
