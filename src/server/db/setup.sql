@@ -1,5 +1,9 @@
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- Enable Vector extension for AI embeddings
+CREATE EXTENSION IF NOT EXISTS "vector";
+-- Enable Crypto extension
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Create users table
 CREATE TABLE IF NOT EXISTS users (
