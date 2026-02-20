@@ -4,6 +4,7 @@ import Login from './components/Login.js';
 import Register from './components/Register.js';
 import Home from './components/Home.js';
 import Setup from './components/Setup.js';
+import UserManagement from './components/UserManagement.js';
 import { MainLayout, DashboardLayout } from './components/Layouts.js';
 import './App.css';
 
@@ -60,7 +61,7 @@ function App() {
     return <div className="container">Loading system...</div>;
   }
 
-  const hasDashboardAccess = isRoot || permissions.includes('view_dashboard');
+  const hasDashboardAccess = isRoot || permissions.includes('read:dashboard');
 
   return (
     <Router>
@@ -101,7 +102,7 @@ function App() {
           {user && hasDashboardAccess && (
             <Route path="/dashboard" element={<DashboardLayout username={user} _isRoot={isRoot} onLogout={handleLogout} />}>
               <Route index element={<div><h1>Dashboard Overview</h1><p>Welcome to the admin area.</p></div>} />
-              <Route path="users" element={<div><h1>User Management</h1><p>Manage your system users here.</p></div>} />
+              <Route path="users" element={<UserManagement token={token} currentPermissions={permissions} isRoot={isRoot} />} />
               <Route path="settings" element={<div><h1>System Settings</h1><p>Configure global parameters.</p></div>} />
             </Route>
           )}

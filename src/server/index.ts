@@ -46,6 +46,11 @@ const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) 
   });
 };
 
+const hasPermission = (user: UserPayload, action: string, resource: string) => {
+  if (user.is_root) return true;
+  return user.permissions.includes(`${action}:${resource}`);
+};
+
 app.get('/api/setup/status', async (req, res) => {
   try {
     const result = await pool.query('SELECT COUNT(*) FROM users');
@@ -59,6 +64,90 @@ app.get('/api/setup/status', async (req, res) => {
 
 app.get('/api/health', authenticateToken, (req, res) => {
   res.json({ status: 'ok', user: (req as AuthRequest).user });
+});
+
+// Admin User Management Endpoints
+app.get('/api/admin/users', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'read', 'dashboard') && !hasPermission(user, 'read', 'users')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const result = await pool.query(
+      'SELECT id, username, is_root, enabled, created_at, last_login_at, deleted_at FROM users ORDER BY created_at DESC'
+    );
+    res.json(result.rows);
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+app.post('/api/admin/users', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'create', 'users')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { username, password } = req.body;
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await pool.query(
+      'INSERT INTO users (username, password_hash) VALUES ($1, $2)',
+      [username, hashedPassword]
+    );
+    res.status(201).json({ message: 'User created' });
+  } catch {
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+app.delete('/api/admin/users/:id', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'delete', 'users')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    await pool.query('UPDATE users SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1', [req.params.id]);
+    res.json({ message: 'User soft-deleted' });
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : 'Failed to delete user';
+    res.status(500).json({ error: errorMessage });
+  }
+});
+
+app.post('/api/admin/users/:id/restore', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'update', 'users')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    await pool.query('UPDATE users SET deleted_at = NULL WHERE id = $1', [req.params.id]);
+    res.json({ message: 'User restored' });
+  } catch {
+    res.status(500).json({ error: 'Failed to restore user' });
+  }
+});
+
+app.post('/api/admin/users/:id/password', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'reset_password', 'users')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { password } = req.body;
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await pool.query(
+      'UPDATE users SET password_hash = $1, password_last_set_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [hashedPassword, req.params.id]
+    );
+    res.json({ message: 'Password reset successful' });
+  } catch {
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
 });
 
 app.post('/api/setup/root', async (req, res) => {

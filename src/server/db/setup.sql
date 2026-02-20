@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS roles (
 -- Permissions table
 CREATE TABLE IF NOT EXISTS permissions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(100) UNIQUE NOT NULL,
+    name VARCHAR(100) UNIQUE NOT NULL, -- Format action:resource
+    action VARCHAR(50) NOT NULL,       -- create, read, update, delete
+    resource VARCHAR(50) NOT NULL,     -- users, roles, etc.
     description TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -65,6 +67,21 @@ CREATE TRIGGER trg_protect_root_user
     BEFORE DELETE OR UPDATE OF deleted_at ON users
     FOR EACH ROW
     EXECUTE FUNCTION protect_root_user();
+
+-- Seed initial permissions
+INSERT INTO permissions (name, action, resource, description) VALUES
+    ('read:dashboard', 'read', 'dashboard', 'Ability to access the admin dashboard'),
+    ('create:users', 'create', 'users', 'Create new system users'),
+    ('read:users', 'read', 'users', 'View user lists'),
+    ('update:users', 'update', 'users', 'Update existing users'),
+    ('delete:users', 'delete', 'users', 'Soft-delete users'),
+    ('restore:users', 'update', 'users', 'Restore soft-deleted users'),
+    ('reset_password:users', 'update', 'users', 'Reset any user password'),
+    ('create:roles', 'create', 'roles', 'Create new roles'),
+    ('read:roles', 'read', 'roles', 'View roles and permissions'),
+    ('update:roles', 'update', 'roles', 'Modify roles and permissions'),
+    ('delete:roles', 'delete', 'roles', 'Delete roles')
+ON CONFLICT (name) DO NOTHING;
 
 -- Trigger to update updated_at on change
 CREATE OR REPLACE FUNCTION update_updated_at_column()

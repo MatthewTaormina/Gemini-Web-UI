@@ -37,25 +37,27 @@ Defines sets of permissions that can be assigned to users.
 | `created_at` | TIMESTAMP | Creation time |
 
 ### `permissions`
-Individual fine-grained actions.
+Individual fine-grained actions following the `action:resource` or `action:resource:id` pattern.
 
 | Column | Type | Description |
 | :--- | :--- | :--- |
 | `id` | UUID | Primary Key |
-| `name` | VARCHAR(100) | Unique identifier (e.g., 'user:create') |
+| `name` | VARCHAR(100) | Unique identifier (e.g., `create:users`, `read:dashboard`) |
+| `action` | VARCHAR(50) | The CRUD verb (create, read, update, delete) |
+| `resource` | VARCHAR(50) | The target resource (users, roles, dashboard, etc.) |
 | `description` | TEXT | What this permission allows |
 | `created_at` | TIMESTAMP | Creation time |
 
 ### `role_permissions`
-Many-to-many relationship between roles and permissions.
-
-### `user_roles`
-Many-to-many relationship between users and roles.
+Many-to-many relationship between roles and permissions. This defines the **Policy** for each role.
 
 ## Constraints
 - **Singleton Root**: Only one user can have `is_root = true`.
 - **Immutable Root**: The root user cannot be deleted (either hard or soft delete).
-- **RBAC**: All non-root users operate under Role-Based Access Control. Root bypasses all checks.
+- **RBAC Policies**: 
+  - Access is determined by the union of all permissions assigned to a user's roles.
+  - Standard format: `{verb}:{resource}`.
+  - Root user bypasses all policy checks (Super Admin).
 
 ## Relationships
 ```mermaid
