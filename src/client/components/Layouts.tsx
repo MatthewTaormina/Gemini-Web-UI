@@ -3,6 +3,21 @@ import { Link, Outlet } from 'react-router-dom';
 import '../Layouts.css';
 
 export const DashboardLayout: React.FC<{ username: string; _isRoot: boolean; onLogout: () => void }> = ({ username, onLogout }) => {
+  const handleLogout = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        await fetch('/api/logout', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      }
+    } catch (err) {
+      console.error('Logout revocation failed:', err);
+    }
+    onLogout();
+  };
+
   return (
     <div className="dashboard-container">
       <aside className="sidebar">
@@ -19,7 +34,7 @@ export const DashboardLayout: React.FC<{ username: string; _isRoot: boolean; onL
         </nav>
         <div className="sidebar-footer">
           <p style={{ fontSize: '0.8rem', color: '#a0aec0' }}>Logged in as: {username}</p>
-          <button onClick={onLogout} className="btn" style={{ padding: '0.5rem', fontSize: '0.8rem', backgroundColor: '#e53e3e' }}>
+          <button onClick={handleLogout} className="btn" style={{ padding: '0.5rem', fontSize: '0.8rem', backgroundColor: '#e53e3e' }}>
             Logout
           </button>
         </div>
@@ -32,6 +47,22 @@ export const DashboardLayout: React.FC<{ username: string; _isRoot: boolean; onL
 };
 
 export const MainLayout: React.FC<{ username: string | null; onLogout: () => void; _isRoot: boolean; hasDashboardAccess: boolean }> = ({ username, onLogout, hasDashboardAccess }) => {
+  const handleLogout = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        await fetch('/api/logout', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+      }
+    } catch (err) {
+      console.error('Logout revocation failed:', err);
+    }
+    onLogout();
+  };
+
   return (
     <div className="main-layout">
       <nav className="navbar">
@@ -44,7 +75,7 @@ export const MainLayout: React.FC<{ username: string | null; onLogout: () => voi
               {hasDashboardAccess && <Link to="/dashboard">Dashboard</Link>}
               <span style={{ marginLeft: '1rem', color: '#718096' }}>{username}</span>
               <button 
-                onClick={(e) => { e.preventDefault(); onLogout(); }} 
+                onClick={handleLogout} 
                 style={{ 
                   background: 'none', 
                   border: 'none', 

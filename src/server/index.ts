@@ -4,12 +4,13 @@ import dotenv from 'dotenv';
 import pg from 'pg';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-for-dev-only';
 
 app.use(cors());
 app.use(express.json());
@@ -25,25 +26,57 @@ interface UserPayload {
   username: string;
   is_root: boolean;
   permissions: string[];
+  jti: string;
 }
 
 // Extend Request type to include user
 interface AuthRequest extends Request {
-  user?: string | jwt.JwtPayload | UserPayload;
+  user?: UserPayload;
 }
 
+// Get or generate JWT Secret from DB
+let cachedSecret: string | null = null;
+const getJwtSecret = async () => {
+  if (cachedSecret) return cachedSecret;
+  
+  const res = await pool.query("SELECT value FROM system_config WHERE key = 'jwt_secret'");
+  if (res.rows.length > 0) {
+    cachedSecret = res.rows[0].value;
+    return cachedSecret!;
+  }
+
+  // Generate new secret if missing
+  const newSecret = crypto.randomBytes(64).toString('hex');
+  await pool.query(
+    "INSERT INTO system_config (key, value) VALUES ('jwt_secret', $1) ON CONFLICT (key) DO NOTHING",
+    [newSecret]
+  );
+  cachedSecret = newSecret;
+  return newSecret;
+};
+
 // Middleware to verify JWT
-const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
+const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) return res.sendStatus(401);
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.sendStatus(403);
-    req.user = user as UserPayload;
+  try {
+    const secret = await getJwtSecret();
+    const user = jwt.verify(token, secret) as UserPayload;
+    
+    // Check if token is revoked
+    const revocation = await pool.query('SELECT 1 FROM revoked_tokens WHERE jti = $1', [user.jti]);
+    if (revocation.rows.length > 0) {
+      return res.status(401).json({ error: 'Token has been revoked' });
+    }
+
+    req.user = user;
     next();
-  });
+  } catch (err) {
+    return res.sendStatus(403);
+  }
 };
 
 const hasPermission = (user: UserPayload, action: string, resource: string) => {
@@ -268,9 +301,11 @@ app.post('/api/login', async (req, res) => {
       }
 
       // Generate JWT
+      const secret = await getJwtSecret();
+      const jti = uuidv4();
       const token = jwt.sign(
-        { id: user.id, username: user.username, is_root: user.is_root, permissions },
-        JWT_SECRET,
+        { id: user.id, username: user.username, is_root: user.is_root, permissions, jti },
+        secret,
         { expiresIn: '24h' }
       );
 
@@ -286,6 +321,21 @@ app.post('/api/login', async (req, res) => {
     }
   } catch {
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+app.post('/api/logout', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  try {
+    // Revoke the token by adding its jti to the blacklist
+    // Set expiry to 25h to ensure it covers the token's lifetime
+    await pool.query(
+      'INSERT INTO revoked_tokens (jti, expires_at) VALUES ($1, NOW() + interval \'25 hours\')',
+      [user.jti]
+    );
+    res.json({ success: true, message: 'Logged out successfully' });
+  } catch {
+    res.status(500).json({ error: 'Logout failed' });
   }
 });
 
