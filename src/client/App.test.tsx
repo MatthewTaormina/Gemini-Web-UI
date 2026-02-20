@@ -10,8 +10,8 @@ global.fetch = vi.fn(() =>
   })
 ) as unknown as typeof fetch;
 
-test('renders Gemini Web UI title', async () => {
+test('renders Login heading', async () => {
   render(<App />);
-  const linkElement = screen.getByText(/Gemini Web UI/i);
-  expect(linkElement).toBeInTheDocument();
+  const headingElement = screen.getByRole('heading', { name: /Login/i });
+  expect(headingElement).toBeInTheDocument();
 });
