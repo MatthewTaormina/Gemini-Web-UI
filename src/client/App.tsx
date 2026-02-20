@@ -11,6 +11,7 @@ function App() {
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [user, setUser] = useState<string | null>(localStorage.getItem('user'));
   const [isRoot, setIsRoot] = useState<boolean>(localStorage.getItem('isRoot') === 'true');
+  const [permissions, setPermissions] = useState<string[]>(JSON.parse(localStorage.getItem('permissions') || '[]'));
 
   useEffect(() => {
     // Check backend health
@@ -26,18 +27,22 @@ function App() {
       .catch(() => setInitialized(false));
   }, []);
 
-  const handleLogin = (username: string, isRootUser: boolean) => {
+  const handleLogin = (username: string, isRootUser: boolean, userPermissions: string[]) => {
     setUser(username);
     setIsRoot(isRootUser);
+    setPermissions(userPermissions);
     localStorage.setItem('user', username);
     localStorage.setItem('isRoot', isRootUser.toString());
+    localStorage.setItem('permissions', JSON.stringify(userPermissions));
   };
 
   const handleLogout = () => {
     setUser(null);
     setIsRoot(false);
+    setPermissions([]);
     localStorage.removeItem('user');
     localStorage.removeItem('isRoot');
+    localStorage.removeItem('permissions');
   };
 
   if (initialized === null) {
@@ -67,7 +72,7 @@ function App() {
                 <Navigate to="/setup" />
               ) : (
                 user ? (
-                  <Home username={user} isRoot={isRoot} onLogout={handleLogout} health={health} />
+                  <Home username={user} isRoot={isRoot} permissions={permissions} onLogout={handleLogout} health={health} />
                 ) : (
                   <Navigate to="/login" />
                 )

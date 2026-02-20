@@ -45,8 +45,8 @@ app.post('/api/setup/root', async (req, res) => {
 
     // In a production app, use bcrypt to hash the password
     await pool.query(
-      'INSERT INTO users (username, password_hash, role, is_root) VALUES ($1, $2, $3, $4)',
-      [username, password, 'admin', true]
+      'INSERT INTO users (username, password_hash, is_root) VALUES ($1, $2, $3)',
+      [username, password, true]
     );
     
     res.status(201).json({ message: 'Root user created successfully' });
@@ -104,7 +104,28 @@ app.post('/api/login', async (req, res) => {
     if (result.rows.length > 0) {
       const user = result.rows[0];
       await pool.query('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
-      res.json({ success: true, username: user.username, is_root: user.is_root });
+
+      // Fetch permissions
+      let permissions: string[] = [];
+      if (!user.is_root) {
+        const permResult = await pool.query(
+          `SELECT DISTINCT p.name 
+           FROM permissions p
+           JOIN role_permissions rp ON p.id = rp.permission_id
+           JOIN roles r ON rp.role_id = r.id
+           JOIN user_roles ur ON r.id = ur.role_id
+           WHERE ur.user_id = $1`,
+          [user.id]
+        );
+        permissions = permResult.rows.map(row => row.name);
+      }
+
+      res.json({ 
+        success: true, 
+        username: user.username, 
+        is_root: user.is_root,
+        permissions 
+      });
     } else {
       res.status(401).json({ error: 'Invalid credentials' });
     }
