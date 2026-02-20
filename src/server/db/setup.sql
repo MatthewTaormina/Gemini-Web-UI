@@ -70,6 +70,7 @@ CREATE TRIGGER trg_protect_root_user
 
 -- Seed initial permissions
 INSERT INTO permissions (name, action, resource, description) VALUES
+    ('*:*', '*', '*', 'Full system access'),
     ('read:dashboard', 'read', 'dashboard', 'Ability to access the admin dashboard'),
     ('create:users', 'create', 'users', 'Create new system users'),
     ('read:users', 'read', 'users', 'View user lists'),
@@ -82,6 +83,18 @@ INSERT INTO permissions (name, action, resource, description) VALUES
     ('update:roles', 'update', 'roles', 'Modify roles and permissions'),
     ('delete:roles', 'delete', 'roles', 'Delete roles')
 ON CONFLICT (name) DO NOTHING;
+
+-- Seed default roles
+INSERT INTO roles (name, description) VALUES
+    ('Super Admin', 'Full unrestricted access to all resources')
+ON CONFLICT (name) DO NOTHING;
+
+-- Assign *:* to Super Admin
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id 
+FROM roles r, permissions p 
+WHERE r.name = 'Super Admin' AND p.name = '*:*'
+ON CONFLICT DO NOTHING;
 
 -- Trigger to update updated_at on change
 CREATE OR REPLACE FUNCTION update_updated_at_column()

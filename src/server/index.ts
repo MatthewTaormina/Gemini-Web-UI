@@ -48,7 +48,15 @@ const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) 
 
 const hasPermission = (user: UserPayload, action: string, resource: string) => {
   if (user.is_root) return true;
-  return user.permissions.includes(`${action}:${resource}`);
+  
+  return user.permissions.some(perm => {
+    const [pAction, pResource] = perm.split(':');
+    
+    const actionMatch = pAction === '*' || pAction === action;
+    const resourceMatch = pResource === '*' || pResource === resource;
+    
+    return actionMatch && resourceMatch;
+  });
 };
 
 app.get('/api/setup/status', async (req, res) => {
@@ -77,7 +85,16 @@ app.get('/api/admin/users', authenticateToken, async (req, res) => {
     const result = await pool.query(
       'SELECT id, username, is_root, enabled, created_at, last_login_at, deleted_at FROM users ORDER BY created_at DESC'
     );
-    res.json(result.rows);
+    
+    const usersWithRoles = await Promise.all(result.rows.map(async (u) => {
+      const rolesRes = await pool.query(
+        'SELECT r.id, r.name FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = $1',
+        [u.id]
+      );
+      return { ...u, roles: rolesRes.rows };
+    }));
+
+    res.json(usersWithRoles);
   } catch {
     res.status(500).json({ error: 'Failed to fetch users' });
   }
@@ -235,7 +252,9 @@ app.post('/api/login', async (req, res) => {
 
       // Fetch permissions
       let permissions: string[] = [];
-      if (!user.is_root) {
+      if (user.is_root) {
+        permissions = ['*:*'];
+      } else {
         const permResult = await pool.query(
           `SELECT DISTINCT p.name 
            FROM permissions p
@@ -267,6 +286,172 @@ app.post('/api/login', async (req, res) => {
     }
   } catch {
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// Admin Role Management Endpoints
+app.get('/api/admin/roles', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'read', 'roles')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const roles = await pool.query('SELECT * FROM roles ORDER BY name ASC');
+    const rolesWithPerms = await Promise.all(roles.rows.map(async (role) => {
+      const perms = await pool.query(
+        'SELECT p.id, p.name FROM permissions p JOIN role_permissions rp ON p.id = rp.permission_id WHERE rp.role_id = $1',
+        [role.id]
+      );
+      return { ...role, permissions: perms.rows };
+    }));
+    res.json(rolesWithPerms);
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch roles' });
+  }
+});
+
+app.get('/api/admin/permissions', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'read', 'roles')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const result = await pool.query('SELECT * FROM permissions ORDER BY resource ASC, action ASC');
+    res.json(result.rows);
+  } catch {
+    res.status(500).json({ error: 'Failed to fetch permissions' });
+  }
+});
+
+app.post('/api/admin/roles', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'create', 'roles')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { name, description, permissionIds } = req.body;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const roleResult = await client.query(
+      'INSERT INTO roles (name, description) VALUES ($1, $2) RETURNING id',
+      [name, description]
+    );
+    const roleId = roleResult.rows[0].id;
+
+    if (permissionIds && permissionIds.length > 0) {
+      for (const permId of permissionIds) {
+        await client.query(
+          'INSERT INTO role_permissions (role_id, permission_id) VALUES ($1, $2)',
+          [roleId, permId]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ message: 'Role created' });
+  } catch {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'Failed to create role' });
+  } finally {
+    client.release();
+  }
+});
+
+app.put('/api/admin/roles/:id', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'update', 'roles')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { name, description, permissionIds } = req.body;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      'UPDATE roles SET name = $1, description = $2 WHERE id = $3',
+      [name, description, req.params.id]
+    );
+
+    // Sync permissions
+    await client.query('DELETE FROM role_permissions WHERE role_id = $1', [req.params.id]);
+    if (permissionIds && permissionIds.length > 0) {
+      for (const permId of permissionIds) {
+        await client.query(
+          'INSERT INTO role_permissions (role_id, permission_id) VALUES ($1, $2)',
+          [req.params.id, permId]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ message: 'Role updated' });
+  } catch {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'Failed to update role' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/admin/permissions', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!user.is_root && !user.permissions.includes('update:roles')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { name, action, resource, description } = req.body;
+  try {
+    await pool.query(
+      'INSERT INTO permissions (name, action, resource, description) VALUES ($1, $2, $3, $4)',
+      [name, action, resource, description]
+    );
+    res.status(201).json({ message: 'Permission created' });
+  } catch {
+    res.status(500).json({ error: 'Failed to create permission' });
+  }
+});
+
+app.delete('/api/admin/permissions/:id', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!user.is_root && !user.permissions.includes('update:roles')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    await pool.query('DELETE FROM permissions WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Permission deleted' });
+  } catch {
+    res.status(500).json({ error: 'Failed to delete permission' });
+  }
+});
+
+app.post('/api/admin/users/:id/roles', authenticateToken, async (req, res) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (!hasPermission(user, 'update', 'users')) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { roleIds } = req.body;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM user_roles WHERE user_id = $1', [req.params.id]);
+    if (roleIds && roleIds.length > 0) {
+      for (const roleId of roleIds) {
+        await client.query(
+          'INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)',
+          [req.params.id, roleId]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ message: 'User roles updated' });
+  } catch {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'Failed to update user roles' });
+  } finally {
+    client.release();
   }
 });
 
