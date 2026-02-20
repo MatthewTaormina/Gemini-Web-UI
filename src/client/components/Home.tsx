@@ -4,11 +4,12 @@ interface HomeProps {
   username: string;
   isRoot: boolean;
   permissions: string[];
+  token: string | null;
   onLogout: () => void;
   health: string;
 }
 
-const Home: React.FC<HomeProps> = ({ username, isRoot, permissions, onLogout, health }) => {
+const Home: React.FC<HomeProps> = ({ username, isRoot, permissions, token, onLogout, health }) => {
   return (
     <div className="container">
       <div className="auth-card" style={{ maxWidth: '600px' }}>
@@ -26,7 +27,9 @@ const Home: React.FC<HomeProps> = ({ username, isRoot, permissions, onLogout, he
             ROOT ADMINISTRATOR
           </div>
         )}
-        <p style={{ textAlign: 'center' }}>You are successfully logged in.</p>
+        <p style={{ textAlign: 'center', color: '#28a745', fontWeight: 'bold' }}>
+          Securely logged in with JWT {token ? `(Session: ${token.substring(0, 8)}...)` : ''}
+        </p>
         
         {!isRoot && permissions.length > 0 && (
           <div style={{ marginBottom: '1rem' }}>

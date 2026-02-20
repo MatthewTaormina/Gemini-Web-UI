@@ -79,9 +79,3 @@ CREATE TRIGGER update_users_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
--- Create a mock user for testing (password: password123)
--- In a real scenario, this hash would be generated via Argon2/BCrypt
-INSERT INTO users (username, password_hash, is_root)
-VALUES ('testuser', '$2b$10$YourMockHashHere', true)
-ON CONFLICT (username) DO NOTHING;
