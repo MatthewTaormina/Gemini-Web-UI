@@ -21,6 +21,11 @@ async function resetDatabase() {
     try {
       await client.query('BEGIN');
       // Drop in order of dependencies
+      await client.query('DROP TABLE IF EXISTS attachments CASCADE');
+      await client.query('DROP TABLE IF EXISTS messages CASCADE');
+      await client.query('DROP TABLE IF EXISTS conversations CASCADE');
+      await client.query('DROP TABLE IF EXISTS revoked_tokens CASCADE');
+      await client.query('DROP TABLE IF EXISTS system_config CASCADE');
       await client.query('DROP TABLE IF EXISTS user_roles CASCADE');
       await client.query('DROP TABLE IF EXISTS role_permissions CASCADE');
       await client.query('DROP TABLE IF EXISTS roles CASCADE');

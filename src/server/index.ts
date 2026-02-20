@@ -15,6 +15,7 @@ const port = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Postgres Pool
 const { Pool } = pg;
@@ -61,7 +62,7 @@ const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunc
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
-  if (!token) return res.sendStatus(401);
+  if (!token) return res.status(401).json({ error: 'No token provided' });
 
   try {
     const secret = await getJwtSecret();
@@ -75,8 +76,9 @@ const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunc
 
     req.user = user;
     next();
-  } catch (err) {
-    return res.sendStatus(403);
+  } catch (err: any) {
+    console.error('JWT Verification Error:', err.message);
+    return res.status(403).json({ error: 'Invalid or expired token', message: err.message });
   }
 };
 

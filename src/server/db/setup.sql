@@ -1,7 +1,7 @@
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
--- Enable Vector extension for AI embeddings
-CREATE EXTENSION IF NOT EXISTS "vector";
+-- Enable Vector extension for AI embeddings (Optional, comment if not available)
+-- CREATE EXTENSION IF NOT EXISTS "vector";
 -- Enable Crypto extension
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
@@ -88,12 +88,17 @@ INSERT INTO permissions (name, action, resource, description) VALUES
     ('create:roles', 'create', 'roles', 'Create new roles'),
     ('read:roles', 'read', 'roles', 'View roles and permissions'),
     ('update:roles', 'update', 'roles', 'Modify roles and permissions'),
-    ('delete:roles', 'delete', 'roles', 'Delete roles')
+    ('delete:roles', 'delete', 'roles', 'Delete roles'),
+    ('read:chat', 'read', 'chat', 'View chat messages and history'),
+    ('write:chat', 'write', 'chat', 'Send chat messages'),
+    ('delete:chat', 'delete', 'chat', 'Delete chat history'),
+    ('manage:chat_settings', 'manage', 'chat_settings', 'Modify Gemini chat settings')
 ON CONFLICT (name) DO NOTHING;
 
 -- Seed default roles
 INSERT INTO roles (name, description) VALUES
-    ('Super Admin', 'Full unrestricted access to all resources')
+    ('Super Admin', 'Full unrestricted access to all resources'),
+    ('Chat User', 'Access to the Gemini Chat application')
 ON CONFLICT (name) DO NOTHING;
 
 -- Assign *:* to Super Admin
@@ -101,6 +106,13 @@ INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id 
 FROM roles r, permissions p 
 WHERE r.name = 'Super Admin' AND p.name = '*:*'
+ON CONFLICT DO NOTHING;
+
+-- Assign chat permissions to Chat User role
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id 
+FROM roles r, permissions p 
+WHERE r.name = 'Chat User' AND p.name IN ('read:chat', 'write:chat', 'delete:chat')
 ON CONFLICT DO NOTHING;
 
 -- Trigger to update updated_at on change
@@ -137,6 +149,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT 'gemini-3-flash-preview',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     meta JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -151,8 +164,20 @@ CREATE TABLE IF NOT EXISTS messages (
     meta JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS attachments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
+    conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_message_id ON attachments(message_id);
 
 -- Trigger for conversations updated_at
 CREATE TRIGGER update_conversations_updated_at

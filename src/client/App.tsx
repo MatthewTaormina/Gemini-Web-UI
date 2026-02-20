@@ -19,6 +19,17 @@ function App() {
   const [permissions, setPermissions] = useState<string[]>(JSON.parse(localStorage.getItem('permissions') || '[]'));
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
 
+  const handleLogout = () => {
+    setUser(null);
+    setIsRoot(false);
+    setPermissions([]);
+    setToken(null);
+    localStorage.removeItem('user');
+    localStorage.removeItem('isRoot');
+    localStorage.removeItem('permissions');
+    localStorage.removeItem('token');
+  };
+
   useEffect(() => {
     // Check backend health
     const headers: Record<string, string> = {};
@@ -27,9 +38,19 @@ function App() {
     }
 
     fetch('/api/health', { headers })
-      .then(res => res.json())
+      .then(res => {
+        if (res.status === 401 || res.status === 403) {
+          handleLogout();
+          throw new Error('Unauthorized');
+        }
+        return res.json();
+      })
       .then(data => setHealth(data.status))
-      .catch(() => setHealth('Error connecting to backend'));
+      .catch((err) => {
+        if (err.message !== 'Unauthorized') {
+          setHealth('Error connecting to backend');
+        }
+      });
 
     // Check if setup is needed
     fetch('/api/setup/status')
@@ -47,17 +68,6 @@ function App() {
     localStorage.setItem('isRoot', isRootUser.toString());
     localStorage.setItem('permissions', JSON.stringify(userPermissions));
     localStorage.setItem('token', userToken);
-  };
-
-  const handleLogout = () => {
-    setUser(null);
-    setIsRoot(false);
-    setPermissions([]);
-    setToken(null);
-    localStorage.removeItem('user');
-    localStorage.removeItem('isRoot');
-    localStorage.removeItem('permissions');
-    localStorage.removeItem('token');
   };
 
   if (initialized === null) {
@@ -107,7 +117,7 @@ function App() {
               path="/chat" 
               element={
                 user ? (
-                  <ChatApp token={token} />
+                  <ChatApp token={token!} onLogout={handleLogout} />
                 ) : (
                   <Navigate to="/login" />
                 )

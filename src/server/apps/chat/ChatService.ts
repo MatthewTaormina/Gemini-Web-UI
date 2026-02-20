@@ -1,6 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import pg from 'pg';
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs/promises';
 
 dotenv.config();
 
@@ -9,21 +11,25 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+export interface FileAttachment {
+  filename: string;
+  path: string;
+  mimetype: string;
+  size: number;
+}
+
 export class ChatService {
   private ai: any = null;
 
   private async getAI() {
-    // Try environment variable first
     let apiKey = process.env.GEMINI_API_KEY;
-
-    // Then try database (which can override env if set)
     const res = await pool.query("SELECT key, value FROM system_config WHERE key = 'gemini_api_key'");
     if (res.rows.length > 0 && res.rows[0].value !== 'YOUR_API_KEY_HERE') {
       apiKey = res.rows[0].value;
     }
 
     if (!apiKey || apiKey === 'YOUR_API_KEY_HERE') {
-      throw new Error("Gemini API key not found. Please set GEMINI_API_KEY in your .env file or system settings.");
+      throw new Error("Gemini API key not found.");
     }
 
     if (!this.ai) {
@@ -31,67 +37,6 @@ export class ChatService {
     }
 
     return this.ai;
-  }
-
-  async sendMessage(conversationId: string, userId: string, message: string) {
-    const ai = await this.getAI();
-    
-    // Get model name
-    let modelName = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
-    const modelRes = await pool.query("SELECT value FROM system_config WHERE key = 'gemini_model'");
-    if (modelRes.rows.length > 0) {
-      modelName = modelRes.rows[0].value;
-    }
-
-    // Verify conversation belongs to user
-    const convRes = await pool.query(
-      "SELECT id FROM conversations WHERE id = $1 AND user_id = $2",
-      [conversationId, userId]
-    );
-    if (convRes.rows.length === 0) {
-      throw new Error("Conversation not found or access denied.");
-    }
-
-    // Save user message
-    await pool.query(
-      "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
-      [conversationId, 'user', message]
-    );
-
-    // Get message history for context
-    const historyRes = await pool.query(
-      "SELECT role, content FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
-      [conversationId]
-    );
-
-    const contents = historyRes.rows.map(row => ({
-      role: row.role === 'model' ? 'model' : 'user',
-      parts: [{ text: row.content }],
-    }));
-
-    // Generate content using the new SDK
-    const result = await ai.models.generateContent({
-      model: modelName,
-      contents: contents,
-    });
-
-    const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text || "No response received.";
-
-    // Save model response
-    await pool.query(
-      "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
-      [conversationId, 'model', responseText]
-    );
-
-    return responseText;
-  }
-
-  async createConversation(userId: string, title: string) {
-    const res = await pool.query(
-      "INSERT INTO conversations (user_id, title) VALUES ($1, $2) RETURNING id, title, created_at",
-      [userId, title]
-    );
-    return res.rows[0];
   }
 
   async getConversations(userId: string) {
@@ -102,32 +47,146 @@ export class ChatService {
     return res.rows;
   }
 
-  async getMessages(conversationId: string, userId: string) {
-    // Verify access
-    const convRes = await pool.query(
-      "SELECT id FROM conversations WHERE id = $1 AND user_id = $2",
-      [conversationId, userId]
-    );
-    if (convRes.rows.length === 0) {
-      throw new Error("Conversation not found or access denied.");
-    }
-
+  async createConversation(userId: string, title: string, model: string = 'gemini-3.1-pro-preview') {
     const res = await pool.query(
-      "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
-      [conversationId]
+      "INSERT INTO conversations (user_id, title, model) VALUES ($1, $2, $3) RETURNING id, user_id, title, model, created_at, updated_at",
+      [userId, title, model]
     );
+    return res.rows[0];
+  }
+
+  async getMessages(conversationId: string, userId: string) {
+    // Verify ownership
+    const convCheck = await pool.query("SELECT id FROM conversations WHERE id = $1 AND user_id = $2", [conversationId, userId]);
+    if (convCheck.rows.length === 0) throw new Error("Unauthorized");
+
+    const res = await pool.query(`
+      SELECT m.*,
+             (SELECT COALESCE(json_agg(a.*), '[]') 
+              FROM attachments a 
+              WHERE a.message_id = m.id) as attachments
+      FROM messages m
+      WHERE m.conversation_id = $1
+      ORDER BY m.created_at ASC
+    `, [conversationId]);
     return res.rows;
   }
 
-  async deleteConversation(conversationId: string, userId: string) {
-    const res = await pool.query(
-      "DELETE FROM conversations WHERE id = $1 AND user_id = $2 RETURNING id",
+  async sendMessage(conversationId: string, userId: string, message: string, files: FileAttachment[] = []) {
+    const ai = await this.getAI();
+    
+    // Get conversation details (including model)
+    const convRes = await pool.query(
+      "SELECT id, model FROM conversations WHERE id = $1 AND user_id = $2",
       [conversationId, userId]
     );
-    if (res.rows.length === 0) {
-      throw new Error("Conversation not found or access denied.");
+    if (convRes.rows.length === 0) throw new Error("Conversation not found");
+    const modelName = convRes.rows[0].model;
+
+    // Save user message
+    const msgRes = await pool.query(
+      "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
+      [conversationId, 'user', message]
+    );
+    const messageId = msgRes.rows[0].id;
+
+    // Save attachments
+    for (const file of files) {
+      await pool.query(
+        "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
+        [messageId, conversationId, file.filename, file.path, file.mimetype, file.size]
+      );
     }
-    return true;
+
+    // Get message history for context
+    const historyRes = await pool.query(`
+      SELECT m.*,
+             (SELECT COALESCE(json_agg(a.*), '[]') 
+              FROM attachments a 
+              WHERE a.message_id = m.id) as attachments
+      FROM messages m
+      WHERE m.conversation_id = $1
+      ORDER BY m.created_at ASC
+    `, [conversationId]);
+
+    const contents = await Promise.all(historyRes.rows.map(async (row) => {
+      const parts: any[] = [];
+      
+      if (row.content) {
+          parts.push({ text: row.content });
+      }
+      
+      // Add attachments to parts if any
+      for (const att of row.attachments) {
+        try {
+          const fileBuffer = await fs.readFile(att.file_path);
+          parts.push({
+            inlineData: {
+              data: fileBuffer.toString('base64'),
+              mimeType: att.file_type
+            }
+          });
+        } catch (e) {
+          console.error(`Failed to read attachment ${att.file_path}:`, e);
+        }
+      }
+
+      // Safeguard: Ensure at least one part exists
+      if (parts.length === 0) {
+          parts.push({ text: "" });
+      }
+
+      return {
+        role: row.role === 'model' ? 'model' : 'user',
+        parts: parts,
+      };
+    }));
+
+    console.log(`Sending to Gemini [${modelName}]:`, JSON.stringify(contents, null, 2));
+
+    // Generate content
+    const result = await ai.models.generateContent({
+      model: modelName,
+      contents: contents,
+    });
+
+    console.log("Gemini Raw Result:", JSON.stringify(result, null, 2));
+
+    const responseText = result.text || "No response received.";
+
+    // Save model response
+    await pool.query(
+      "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
+      [conversationId, 'model', responseText]
+    );
+
+    // Update conversation timestamp
+    await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
+
+    return responseText;
+  }
+
+  async deleteConversation(conversationId: string, userId: string) {
+    // Get attachments first to delete files
+    const attRes = await pool.query(
+      "SELECT file_path FROM attachments WHERE conversation_id = $1",
+      [conversationId]
+    );
+
+    // Delete files from disk
+    for (const row of attRes.rows) {
+      try {
+        await fs.unlink(row.file_path);
+      } catch (e) {
+        console.error(`Failed to delete file ${row.file_path}:`, e);
+      }
+    }
+
+    // Delete from DB (cascade handles messages and attachments)
+    await pool.query(
+      "DELETE FROM conversations WHERE id = $1 AND user_id = $2",
+      [conversationId, userId]
+    );
   }
 }
 
