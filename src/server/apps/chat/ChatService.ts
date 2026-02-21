@@ -40,6 +40,13 @@ export class ChatService {
     return this.ai;
   }
 
+  private getImageUrl(filename: string, reqOrigin: string) {
+    // If running in development with Vite proxy, reqOrigin should point to backend port usually
+    // However, to ensure it works anywhere, we use the request's origin
+    const origin = reqOrigin || 'http://localhost:3001';
+    return `${origin}/uploads/${filename}`;
+  }
+
   async getConversations(userId: string) {
     const res = await pool.query(
       "SELECT * FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC",
@@ -115,7 +122,7 @@ export class ChatService {
     }
   }
 
-  async sendMessage(conversationId: string, userId: string, message: string, files: FileAttachment[] = [], enabledTools: string[] = []) {
+  async sendMessage(conversationId: string, userId: string, message: string, files: FileAttachment[] = [], enabledTools: string[] = [], reqOrigin: string = 'http://localhost:3001') {
     try {
         const ai = await this.getAI();
         
@@ -187,12 +194,11 @@ export class ChatService {
         if (currentMessageAttachments.length > 0) {
             focusImages = currentMessageAttachments;
         } else {
-            // Include ALL historical images for context, but prioritize the very last one
             focusImages = allHistoryImages.slice(-4); 
         }
 
         if (modelName.includes('-image')) {
-            return this.handleDirectImageGeneration(conversationId, modelName, message, focusImages);
+            return this.handleDirectImageGeneration(conversationId, modelName, message, focusImages, reqOrigin);
         }
 
         const tools: any[] = [];
@@ -200,15 +206,14 @@ export class ChatService {
 
         if (enabledTools.includes('generate_image')) {
           systemInstructionText += "\n\nTool: 'generate_image(prompt)'. Generates an image and returns a Markdown link.\n" +
-                                   "You MUST include the returned Markdown link in your final response to display the image to the user.\n" +
-                                   "Markdown format: ![Generated Image](/uploads/FILENAME.png)\n" +
+                                   "You MUST include the returned Markdown link in your final response.\n" +
                                    "If you need multiple images, call this tool MULTIPLE times in one turn.\n" +
                                    "Format: {\"action\": \"generate_image\", \"action_input\": {\"prompt\": \"...\"}}";
           
           tools.push({
             functionDeclarations: [{
               name: "generate_image",
-              description: "Generates a single image and returns its markdown link. Use this for all image requests.",
+              description: "Generates a single image and returns its absolute URL in markdown. Use for all image requests.",
               parameters: {
                 type: "object",
                 properties: {
@@ -350,7 +355,7 @@ export class ChatService {
             for (const toolCall of toolCalls) {
                 if (toolCall.name === 'generate_image') {
                     const { prompt: imgPrompt } = toolCall.args;
-                    const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, focusImages);
+                    const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, focusImages, reqOrigin);
                     allAttachments.push(...(result.attachments || []));
                     if (result.markdown) {
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + result.markdown;
@@ -396,21 +401,17 @@ export class ChatService {
     }
   }
 
-  private async performImageModelHandoff(conversationId: string, prompt: string, count: number, lastImageContext: any[] = []) {
+  private async performImageModelHandoff(conversationId: string, prompt: string, count: number, lastImageContext: any[] = [], reqOrigin: string) {
     const ai = await this.getAI();
     const imageModelId = 'gemini-2.5-flash-image';
     const generatedAttachments: any[] = [];
     let markdownLinks = "";
     
-    console.log(`[ChatService] performImageModelHandoff: prompt="${prompt}", contextCount=${lastImageContext.length}`);
-
     const generateSingleImage = async () => {
         try {
             const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
                 try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
             }).trim();
-
-            console.log(`[ChatService] Calling ${imageModelId} with prompt: "${internalCleanedPrompt}"`);
 
             const result = await ai.models.generateContent({
                 model: imageModelId,
@@ -429,7 +430,6 @@ export class ChatService {
             const imagePart = parts.find((p: any) => p.inlineData);
             
             if (imagePart) {
-                console.log(`[ChatService] Image part found! Size: ${imagePart.inlineData.data.length} bytes`);
                 const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
                 const filename = `gen-${uuidv4()}.png`;
                 const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
@@ -437,13 +437,11 @@ export class ChatService {
                 await fs.writeFile(filePath, buffer);
                 
                 const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
-                const markdown = `![Generated Image](/uploads/${filename})`;
+                const markdown = `![Generated Image](${this.getImageUrl(filename, reqOrigin)})`;
                 return { att, markdown };
-            } else {
-                console.warn(`[ChatService] No inlineData part found in AI response.`);
             }
         } catch (err) {
-            console.error(`[ChatService] Individual image generation failed:`, err.message, err.stack);
+            console.error(`[ChatService] Individual image generation failed:`, err.message);
         }
         return null;
     };
@@ -457,13 +455,11 @@ export class ChatService {
     return { response: "Generated image.", attachments: generatedAttachments, markdown: markdownLinks };
   }
 
-  private async handleDirectImageGeneration(conversationId: string, modelId: string, prompt: string, lastImageContext: any[] = []) {
+  private async handleDirectImageGeneration(conversationId: string, modelId: string, prompt: string, lastImageContext: any[] = [], reqOrigin: string) {
     const ai = await this.getAI();
     const generatedAttachments: any[] = [];
     let markdownLinks = "";
     
-    console.log(`[ChatService] handleDirectImageGeneration: modelId="${modelId}", prompt="${prompt}", contextCount=${lastImageContext.length}`);
-
     try {
         const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
             try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
@@ -493,9 +489,9 @@ export class ChatService {
             await fs.writeFile(filePath, buffer);
             
             generatedAttachments.push({ file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length });
-            markdownLinks = `![Generated Image](/uploads/${filename})`;
+            markdownLinks = `![Generated Image](${this.getImageUrl(filename, reqOrigin)})`;
         }
-    } catch (err) { console.error(`[ChatService] Direct image failed:`, err.message, err.stack); }
+    } catch (err) { console.error(`[ChatService] Direct image failed:`, err.message); }
 
     const responseText = markdownLinks || "Image generation failed.";
     const res = await pool.query(

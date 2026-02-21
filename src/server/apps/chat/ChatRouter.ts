@@ -77,7 +77,12 @@ router.post('/conversations/:id/messages', upload.array('files'), async (req: Au
       size: f.size
     }));
 
-    const result = await chatService.sendMessage(req.params.id, userId, content, files, enabledTools);
+    // Calculate absolute origin for markdown links
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.headers['x-forwarded-host'] || req.get('host');
+    const origin = `${protocol}://${host}`;
+
+    const result = await chatService.sendMessage(req.params.id, userId, content, files, enabledTools, origin);
     res.json(result);
   } catch (err: any) {
     console.error(`Error in chat route:`, err);
