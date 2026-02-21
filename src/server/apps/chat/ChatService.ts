@@ -198,55 +198,40 @@ export class ChatService {
         }
 
         const tools: any[] = [];
-        let systemInstructionText = "You are Gemini, a helpful AI assistant.";
+        let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nCRITICAL: You have a tool 'generate_images(requests)'.\n" +
-                                   "To generate images, you MUST provide an array of request objects.\n" +
-                                   "Each request MUST be a single, distinct image. NEVER request multiple subjects in one prompt.\n" +
-                                   "If the user wants 4 cats, provide 4 separate request objects, each with a prompt for ONE cat.\n" +
-                                   "DEPRECATED: 'generate_image' (singular) is removed. ALWAYS use 'generate_images' (plural).\n" +
-                                   "Format: {\"action\": \"generate_images\", \"action_input\": {\"requests\": [{\"prompt\": \"...\", \"source_image\": null, \"reference_images\": []}]}}";
+          systemInstructionText += "\n\nTool: 'generate_image(prompt)'. Use it to create images.\n" +
+                                   "If you need multiple images, call this tool MULTIPLE times in one turn.\n" +
+                                   "Format: {\"action\": \"generate_image\", \"action_input\": {\"prompt\": \"...\"}}";
           
           tools.push({
-            function_declarations: [{
-              name: "generate_images",
-              description: "Generates one or more distinct images. Use multiple requests for multiple files.",
+            functionDeclarations: [{
+              name: "generate_image",
+              description: "Generates a single, distinct image. Call multiple times for multiple images.",
               parameters: {
                 type: "object",
                 properties: {
-                  requests: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        prompt: { type: "string", description: "Detailed description of ONE image." },
-                        source_image: { type: "string", description: "Optional: UUID of an image to use as base." },
-                        reference_images: { type: "array", items: { type: "string" }, description: "Optional: Array of UUIDs for style reference." }
-                      },
-                      required: ["prompt"]
-                    }
-                  }
+                  prompt: { type: "string", description: "Detailed description of the image." }
                 },
-                required: ["requests"]
+                required: ["prompt"]
               }
             }]
           });
         }
 
         if (enabledTools.includes('math')) {
-            systemInstructionText += "\n\nCRITICAL: You have a tool 'calculate(expression)'.\n" +
-                                     "Use it for any mathematical calculations.\n" +
-                                     "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"2 + 2\"}}";
+            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use it for math.\n" +
+                                     "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"...\"}}";
             
             tools.push({
-              function_declarations: [{
+              functionDeclarations: [{
                 name: "calculate",
                 description: "Evaluates a mathematical expression.",
                 parameters: {
                   type: "object",
                   properties: {
-                    expression: { type: "string", description: "The math expression to evaluate (e.g., 'sqrt(16) * 5')" }
+                    expression: { type: "string", description: "The math expression to evaluate." }
                   },
                   required: ["expression"]
                 }
@@ -304,17 +289,14 @@ export class ChatService {
                 return cleanPrompt(val);
             }
             let str = String(p).trim();
-            // Try to parse if it looks like JSON
             if (str.startsWith('{') && str.endsWith('}')) {
                 try {
                     const parsed = JSON.parse(str);
                     return cleanPrompt(parsed);
                 } catch (e) {}
             }
-            // Strip markdown JSON blocks if any
             str = str.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
             str = str.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
-            // Final check: if it still looks like a JSON fragment, it might be escaped
             if (str.includes('": "')) {
                 try {
                    const wrapped = JSON.parse(`{${str}}`);
@@ -330,25 +312,15 @@ export class ChatService {
 
         for (const obj of foundObjects) {
             const data = obj.data;
-            const isImageTool = data.name === 'generate_image' || data.name === 'generate_images' || 
-                               data.action === 'generate_image' || data.action === 'generate_images' || 
+            const isImageTool = data.name === 'generate_image' || data.action === 'generate_image' || 
                                data.action === 'dalle.text2im' || data.action === 'image_gen' || data.action === 'text2im';
             const isMathTool = data.name === 'calculate' || data.action === 'calculate';
             
             if (isImageTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
                 if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = { prompt: args }; } }
-                
-                if (Array.isArray(args.requests)) {
-                    for (const req of args.requests) {
-                        const prompt = cleanPrompt(req);
-                        if (prompt) toolCalls.push({ name: 'generate_image', args: { prompt, count: 1 } });
-                    }
-                } else {
-                    const prompt = cleanPrompt(args);
-                    const count = parseInt(args.count || args.n || 1);
-                    toolCalls.push({ name: 'generate_image', args: { prompt, count: isNaN(count) ? 1 : count } });
-                }
+                const prompt = cleanPrompt(args);
+                toolCalls.push({ name: 'generate_image', args: { prompt, count: 1 } });
                 jsonStringsToStrip.push(obj.raw);
             } else if (isMathTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
@@ -358,22 +330,13 @@ export class ChatService {
             }
         }
 
-        const formalToolCall = responseParts.find((p: any) => p.functionCall)?.functionCall;
-        if (formalToolCall) {
-            if (formalToolCall.name === 'generate_image' || formalToolCall.name === 'generate_images') {
-                const args = formalToolCall.args;
-                if (Array.isArray(args.requests)) {
-                    for (const req of args.requests) {
-                        const prompt = cleanPrompt(req);
-                        if (prompt) toolCalls.push({ name: 'generate_image', args: { prompt, count: 1 } });
-                    }
-                } else {
-                    const prompt = cleanPrompt(args);
-                    const count = parseInt(args.count || args.n || 1);
-                    toolCalls.push({ name: 'generate_image', args: { prompt, count: isNaN(count) ? 1 : count } });
-                }
-            } else if (formalToolCall.name === 'calculate') {
-                toolCalls.push({ name: 'calculate', args: { expression: formalToolCall.args.expression } });
+        const formalToolCalls = responseParts.filter((p: any) => p.functionCall).map((p: any) => p.functionCall);
+        for (const ftc of formalToolCalls) {
+            if (ftc.name === 'generate_image') {
+                const prompt = cleanPrompt(ftc.args);
+                toolCalls.push({ name: 'generate_image', args: { prompt, count: 1 } });
+            } else if (ftc.name === 'calculate') {
+                toolCalls.push({ name: 'calculate', args: { expression: ftc.args.expression } });
             }
         }
 
@@ -388,7 +351,6 @@ export class ChatService {
         let lastMsgId = null;
 
         if (toolCalls.length > 0) {
-            // If there's preamble text, save it first
             if (cleanedText) {
                 await pool.query(
                     "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
@@ -424,13 +386,12 @@ export class ChatService {
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
             return { response: finalResponseText, attachments: allAttachments, id: lastMsgId };
         } else {
-            const finalResponseText = cleanedText || textPartsRaw || "No response received.";
             const res = await pool.query(
                 "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
-                [conversationId, 'model', finalResponseText]
+                [conversationId, 'model', finalResponseText || "No response received."]
             );
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: finalResponseText, attachments: [], id: res.rows[0].id };
+            return { response: finalResponseText || "No response received.", attachments: [], id: res.rows[0].id };
         }
     } catch (error) {
         console.error("[ChatService] FATAL Error in sendMessage:", error);
@@ -448,7 +409,6 @@ export class ChatService {
 
     const generateSingleImage = async (index: number) => {
         try {
-            // Internal safety: strip any lingering JSON from the prompt before sending to the image model
             const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
                 try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
             }).trim();
@@ -460,8 +420,8 @@ export class ChatService {
                     parts: [
                         ...lastImageContext, 
                         { text: lastImageContext.length > 0 
-                            ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. This is variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
-                            : `Generate a single, distinct image based on: ${internalCleanedPrompt}. This is variation ${index + 1} of ${safeCount}.` } 
+                            ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. Variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
+                            : `Generate a single, distinct image based on: ${internalCleanedPrompt}. Variation ${index + 1} of ${safeCount}.` } 
                     ] 
                 }]
             });
@@ -486,7 +446,6 @@ export class ChatService {
     const results = await Promise.all(Array.from({ length: safeCount }).map((_, i) => generateSingleImage(i)));
     for (const r of results) { if (r) generatedAttachments.push(r); }
 
-    // Final display safety: recursive clean the prompt one more time for the UI message
     const displayPrompt = prompt.length > 100 ? prompt.substring(0, 97) + "..." : prompt;
     const responseText = generatedAttachments.length > 0 
         ? `Generated ${generatedAttachments.length} distinct image(s) for: ${displayPrompt}` 
@@ -522,7 +481,6 @@ export class ChatService {
 
         const generateSingleImage = async (index: number) => {
             try {
-                // Internal safety: strip any lingering JSON from the prompt
                 const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
                     try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
                 }).trim();
