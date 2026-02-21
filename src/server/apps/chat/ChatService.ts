@@ -202,16 +202,16 @@ export class ChatService {
 
         if (enabledTools.includes('generate_image')) {
           systemInstructionText += "\n\nCRITICAL: You have a tool 'generate_images(requests)'.\n" +
-                                   "To generate multiple images, you MUST provide an array of request objects in the 'requests' parameter.\n" +
-                                   "Each request can have a 'prompt'.\n" +
-                                   "NEVER ask for multiple images in a single prompt string (e.g., do NOT say '4 images of a cat').\n" +
-                                   "Instead, provide 4 separate request objects with distinct prompts.\n" +
-                                   "Format: {\"action\": \"generate_images\", \"action_input\": {\"requests\": [{\"prompt\": \"...\"}, {\"prompt\": \"...\"}]}}";
+                                   "To generate images, you MUST provide an array of request objects.\n" +
+                                   "Each request MUST be a single, distinct image. NEVER request multiple subjects in one prompt.\n" +
+                                   "If the user wants 4 cats, provide 4 separate request objects, each with a prompt for ONE cat.\n" +
+                                   "DEPRECATED: 'generate_image' (singular) is removed. ALWAYS use 'generate_images' (plural).\n" +
+                                   "Format: {\"action\": \"generate_images\", \"action_input\": {\"requests\": [{\"prompt\": \"...\", \"source_image\": null, \"reference_images\": []}]}}";
           
           tools.push({
             function_declarations: [{
               name: "generate_images",
-              description: "Generates one or more distinct images. Use multiple request objects for multiple files.",
+              description: "Generates one or more distinct images. Use multiple requests for multiple files.",
               parameters: {
                 type: "object",
                 properties: {
@@ -220,7 +220,9 @@ export class ChatService {
                     items: {
                       type: "object",
                       properties: {
-                        prompt: { type: "string", description: "Detailed description of the image." }
+                        prompt: { type: "string", description: "Detailed description of ONE image." },
+                        source_image: { type: "string", description: "Optional: UUID of an image to use as base." },
+                        reference_images: { type: "array", items: { type: "string" }, description: "Optional: Array of UUIDs for style reference." }
                       },
                       required: ["prompt"]
                     }
@@ -446,6 +448,11 @@ export class ChatService {
 
     const generateSingleImage = async (index: number) => {
         try {
+            // Internal safety: strip any lingering JSON from the prompt before sending to the image model
+            const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
+                try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
+            }).trim();
+
             const result = await ai.models.generateContent({
                 model: imageModelId,
                 contents: [{ 
@@ -453,8 +460,8 @@ export class ChatService {
                     parts: [
                         ...lastImageContext, 
                         { text: lastImageContext.length > 0 
-                            ? `Edit/Modify the provided image based on this request: ${prompt}. This is variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
-                            : `Generate a single, distinct image based on: ${prompt}. This is variation ${index + 1} of ${safeCount}.` } 
+                            ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. This is variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
+                            : `Generate a single, distinct image based on: ${internalCleanedPrompt}. This is variation ${index + 1} of ${safeCount}.` } 
                     ] 
                 }]
             });
@@ -479,8 +486,10 @@ export class ChatService {
     const results = await Promise.all(Array.from({ length: safeCount }).map((_, i) => generateSingleImage(i)));
     for (const r of results) { if (r) generatedAttachments.push(r); }
 
+    // Final display safety: recursive clean the prompt one more time for the UI message
+    const displayPrompt = prompt.length > 100 ? prompt.substring(0, 97) + "..." : prompt;
     const responseText = generatedAttachments.length > 0 
-        ? `Generated ${generatedAttachments.length} distinct image(s) for: ${prompt}` 
+        ? `Generated ${generatedAttachments.length} distinct image(s) for: ${displayPrompt}` 
         : "Image generation failed.";
 
     const res = await pool.query(
@@ -513,6 +522,11 @@ export class ChatService {
 
         const generateSingleImage = async (index: number) => {
             try {
+                // Internal safety: strip any lingering JSON from the prompt
+                const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
+                    try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
+                }).trim();
+
                 const result = await ai.models.generateContent({
                     model: modelId,
                     contents: [{ 
@@ -520,8 +534,8 @@ export class ChatService {
                         parts: [
                             ...lastImageContext, 
                             { text: lastImageContext.length > 0 
-                                ? `Edit/Modify the provided image based on this request: ${prompt}. Variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
-                                : `Generate a single, distinct image based on: ${prompt}. Variation ${index + 1} of ${safeCount}.` }
+                                ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. Variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
+                                : `Generate a single, distinct image based on: ${internalCleanedPrompt}. Variation ${index + 1} of ${safeCount}.` }
                         ] 
                     }]
                 });
@@ -548,8 +562,9 @@ export class ChatService {
 
     } catch (err) { console.error(`[ChatService] Direct image batch failed:`, err.message); }
 
+    const displayPrompt = prompt.length > 100 ? prompt.substring(0, 97) + "..." : prompt;
     const responseText = generatedAttachments.length > 0 
-        ? `Generated ${generatedAttachments.length} distinct image(s) for: ${prompt}` 
+        ? `Generated ${generatedAttachments.length} distinct image(s) for: ${displayPrompt}` 
         : "Image generation failed. Ensure your prompt is descriptive.";
 
     const res = await pool.query(
