@@ -37,9 +37,15 @@ The server automatically mounts each app's router at `/api/apps/{appId}` to prov
 
 ---
 
-## 4. Inter-App Communication
+## 5. Built-in Apps
 
-Apps can communicate with each other through the `AppContext`. Future versions will support:
-- **Service Mesh**: Direct API calls between apps.
-- **Event Bus**: Asynchronous communication via a shared event-driven system.
-- **Permissions**: Apps are isolated by default and can only access other apps' APIs if granted permission by the user.
+### 5.1 Chat Application
+The Chat app is a flagship integration of the Gemini 3.1, 3.0, and 2.5 series models.
+
+**Features:**
+- **Professional Layout**: A centered, modern interface inspired by high-end AI platforms.
+- **Model Switching**: Mid-chat model selection via a header dropdown, allowing users to pivot between 3.1 Pro (reasoning), 3.0 Flash (speed), and 2.5 Image (creation).
+- **Auto-Titling**: Automatically generates a concise (max 5 words) conversation title using `gemini-3.1-flash-preview` immediately after the first user message.
+- **Batch Image Generation**: Support for direct image models like `gemini-2.5-flash-image` which can produce up to 4 images per prompt in a single API call.
+- **Image Editing**: Intelligent context handling that focuses on the most recent image for modification when an "edit" command is given.
+- **Multimodal History**: Full support for mixed text and image history, enabling long-context visual reasoning.

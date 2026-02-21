@@ -35,6 +35,13 @@ For complex relationships (like User-to-Roles or Role-to-Permissions), we avoid 
 - **Done/X**: Explicit "Done" and "X" buttons provide multiple clear exit paths.
 - **Keyboard (Future)**: Support for the `Esc` key is planned.
 
+### 2.3 Gemini Chat Experience
+The Chat application introduces a specialized "AI-first" design language.
+- **Centered Landing**: New conversations start with a centered "Where should we start?" landing page and quick-start suggestion pills.
+- **Pill Input**: A modern, expansive textarea with integrated file attachments and model capability toggles.
+- **Model Selector Header**: A persistent header that allows changing the active model mid-conversation.
+- **Multimodal Grid**: Message responses containing multiple images (e.g., from batch generation) are automatically rendered in an adaptive grid layout.
+
 ---
 
 ## 3. Styling Principles

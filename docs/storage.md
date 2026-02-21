@@ -41,3 +41,19 @@ All file operations should be performed through the `StorageService` facade, whi
 - **`saveAppFile(appId: string, filename: string, buffer: Buffer)`**: Save a file for an internal app.
 - **`getUserFile(userId: string, filename: string)`**: Retrieve a file for a specific user.
 - **`getAppFile(appId: string, filename: string)`**: Retrieve a file for an internal app.
+
+---
+
+## 4. Git Ignore & Retention
+
+To prevent large binary files or sensitive user data from being committed to the repository, certain directories are explicitly ignored by Git.
+
+### 4.1 `storage_data/chat_uploads/`
+Contains all user-uploaded and AI-generated images for the Chat application.
+- **Status**: Ignored.
+- **Access**: Managed via the Chat application's internal database for mapping UUID filenames to original metadata.
+
+### 4.2 `references/`
+Contains official UI references, screenshots, and design assets.
+- **Status**: Ignored.
+- **Usage**: Local development and design-consistency testing only.
