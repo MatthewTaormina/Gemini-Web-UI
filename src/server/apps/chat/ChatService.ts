@@ -201,22 +201,32 @@ export class ChatService {
         let systemInstructionText = "You are Gemini, a helpful AI assistant.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nCRITICAL: You have a tool 'generate_image(prompt, count)'.\n" +
-                                   "If the user wants an image, you MUST output ONLY a JSON block. NO PREAMBLE. NO APOLOGIES. NO OTHER TEXT.\n" +
-                                   "Format: {\"action\": \"generate_image\", \"action_input\": {\"prompt\": \"detailed prompt\", \"count\": 1}}\n" +
-                                   "Ensure the prompt is a string, NOT an object.";
+          systemInstructionText += "\n\nCRITICAL: You have a tool 'generate_images(requests)'.\n" +
+                                   "To generate multiple images, you MUST provide an array of request objects in the 'requests' parameter.\n" +
+                                   "Each request can have a 'prompt'.\n" +
+                                   "NEVER ask for multiple images in a single prompt string (e.g., do NOT say '4 images of a cat').\n" +
+                                   "Instead, provide 4 separate request objects with distinct prompts.\n" +
+                                   "Format: {\"action\": \"generate_images\", \"action_input\": {\"requests\": [{\"prompt\": \"...\"}, {\"prompt\": \"...\"}]}}";
           
           tools.push({
             function_declarations: [{
-              name: "generate_image",
-              description: "Generates images from a text prompt.",
+              name: "generate_images",
+              description: "Generates one or more distinct images. Use multiple request objects for multiple files.",
               parameters: {
                 type: "object",
                 properties: {
-                  prompt: { type: "string" },
-                  count: { type: "integer" }
+                  requests: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        prompt: { type: "string", description: "Detailed description of the image." }
+                      },
+                      required: ["prompt"]
+                    }
+                  }
                 },
-                required: ["prompt"]
+                required: ["requests"]
               }
             }]
           });
@@ -318,17 +328,25 @@ export class ChatService {
 
         for (const obj of foundObjects) {
             const data = obj.data;
-            const isImageTool = data.name === 'generate_image' || data.action === 'generate_image' || 
-                               data.action === 'dalle.text2im' || data.action === 'image_gen' || data.action === 'text2im' ||
-                               data.prompt && (data.action || data.name);
+            const isImageTool = data.name === 'generate_image' || data.name === 'generate_images' || 
+                               data.action === 'generate_image' || data.action === 'generate_images' || 
+                               data.action === 'dalle.text2im' || data.action === 'image_gen' || data.action === 'text2im';
             const isMathTool = data.name === 'calculate' || data.action === 'calculate';
             
             if (isImageTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
                 if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = { prompt: args }; } }
-                const prompt = cleanPrompt(args);
-                const count = parseInt(args.count || args.n || 1);
-                toolCalls.push({ name: 'generate_image', args: { prompt, count: isNaN(count) ? 1 : count } });
+                
+                if (Array.isArray(args.requests)) {
+                    for (const req of args.requests) {
+                        const prompt = cleanPrompt(req);
+                        if (prompt) toolCalls.push({ name: 'generate_image', args: { prompt, count: 1 } });
+                    }
+                } else {
+                    const prompt = cleanPrompt(args);
+                    const count = parseInt(args.count || args.n || 1);
+                    toolCalls.push({ name: 'generate_image', args: { prompt, count: isNaN(count) ? 1 : count } });
+                }
                 jsonStringsToStrip.push(obj.raw);
             } else if (isMathTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
@@ -340,10 +358,18 @@ export class ChatService {
 
         const formalToolCall = responseParts.find((p: any) => p.functionCall)?.functionCall;
         if (formalToolCall) {
-            if (formalToolCall.name === 'generate_image') {
-                const prompt = cleanPrompt(formalToolCall.args);
-                const count = parseInt(formalToolCall.args.count || formalToolCall.args.n || 1);
-                toolCalls.push({ name: 'generate_image', args: { prompt, count: isNaN(count) ? 1 : count } });
+            if (formalToolCall.name === 'generate_image' || formalToolCall.name === 'generate_images') {
+                const args = formalToolCall.args;
+                if (Array.isArray(args.requests)) {
+                    for (const req of args.requests) {
+                        const prompt = cleanPrompt(req);
+                        if (prompt) toolCalls.push({ name: 'generate_image', args: { prompt, count: 1 } });
+                    }
+                } else {
+                    const prompt = cleanPrompt(args);
+                    const count = parseInt(args.count || args.n || 1);
+                    toolCalls.push({ name: 'generate_image', args: { prompt, count: isNaN(count) ? 1 : count } });
+                }
             } else if (formalToolCall.name === 'calculate') {
                 toolCalls.push({ name: 'calculate', args: { expression: formalToolCall.args.expression } });
             }
