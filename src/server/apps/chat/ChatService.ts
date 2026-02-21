@@ -396,12 +396,12 @@ export class ChatService {
         finalDisplayContent = finalDisplayContent.replace(/\n\s*\n\s*\n/g, "\n\n").trim();
 
         const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent || "No response received."]);
-        const messageId = res.rows[0].id;
+        const modelMessageId = res.rows[0].id;
         for (const att of allAttachments) {
-            await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
+            await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
         }
         await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-        return { response: finalDisplayContent || "No response received.", attachments: allAttachments, id: messageId };
+        return { response: finalDisplayContent || "No response received.", attachments: allAttachments, id: modelMessageId };
 
     } catch (error) {
         console.error("[ChatService] FATAL Error:", error);
