@@ -100,7 +100,7 @@ export class ChatService {
     const ai = await this.getAI();
     try {
         const result = await ai.models.generateContent({
-            model: "gemini-3.1-flash-preview",
+            model: "gemini-3-flash-preview",
             contents: [{
                 role: 'user',
                 parts: [{ text: `Generate a very short, concise title (max 5 words) for a chat conversation that starts with this message: "${firstMessage}". Return only the title text, no quotes or prefix.` }]
@@ -222,6 +222,26 @@ export class ChatService {
           });
         }
 
+        if (enabledTools.includes('math')) {
+            systemInstructionText += "\n\nCRITICAL: You have a tool 'calculate(expression)'.\n" +
+                                     "Use it for any mathematical calculations.\n" +
+                                     "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"2 + 2\"}}";
+            
+            tools.push({
+              function_declarations: [{
+                name: "calculate",
+                description: "Evaluates a mathematical expression.",
+                parameters: {
+                  type: "object",
+                  properties: {
+                    expression: { type: "string", description: "The math expression to evaluate (e.g., 'sqrt(16) * 5')" }
+                  },
+                  required: ["expression"]
+                }
+              }]
+            });
+        }
+
         const result = await ai.models.generateContent({
             model: modelName,
             contents,
@@ -325,6 +345,24 @@ export class ChatService {
         if (toolCall && toolCall.name === 'generate_image') {
             const { prompt: imgPrompt, count = 1 } = toolCall.args;
             return await this.performImageModelHandoff(conversationId, imgPrompt, count, focusImages);
+        } else if (toolCall && toolCall.name === 'calculate') {
+            const { expression } = toolCall.args;
+            let resultText = "";
+            try {
+                // Basic math evaluation for safety; in production use a dedicated math library
+                // eslint-disable-next-line no-eval
+                const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
+                resultText = `The result of ${expression} is ${evalResult}.`;
+            } catch (e) {
+                resultText = `Failed to calculate ${expression}.`;
+            }
+
+            const res = await pool.query(
+                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
+                [conversationId, 'model', resultText]
+            );
+            await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
+            return { response: resultText, attachments: [], id: res.rows[0].id };
         } else {
             const finalResponseText = cleanedText || textPartsRaw || "No response received.";
             const res = await pool.query(

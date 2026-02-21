@@ -52,6 +52,8 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
     const [selectedModel, setSelectedModel] = useState(AVAILABLE_MODELS[0].id);
     const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
     const [previews, setPreviews] = useState<string[]>([]);
+    const [enabledTools, setEnabledTools] = useState<string[]>(['generate_image', 'math']);
+    const [isToolsModalOpen, setIsToolsModalOpen] = useState(false);
     
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -161,6 +163,12 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
         if (currentConversation?.id === id) setCurrentConversation(null);
     };
 
+    const toggleTool = (toolId: string) => {
+        setEnabledTools(prev => 
+            prev.includes(toolId) ? prev.filter(id => id !== toolId) : [...prev, toolId]
+        );
+    };
+
     const handleSendMessage = async (e?: React.FormEvent, customInput?: string) => {
         if (e) e.preventDefault();
         
@@ -174,6 +182,9 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
 
         const formData = new FormData();
         formData.append('content', messageText);
+        enabledTools.forEach(tool => {
+            formData.append('tools', tool);
+        });
         attachedFiles.forEach(file => {
             formData.append('files', file);
         });
@@ -404,6 +415,14 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
                                 >
                                     📎
                                 </button>
+                                <button 
+                                    type="button" 
+                                    className={`action-btn ${isToolsModalOpen ? 'active' : ''}`}
+                                    onClick={() => setIsToolsModalOpen(!isToolsModalOpen)}
+                                    title="Toggle tools"
+                                >
+                                    🛠️
+                                </button>
                                 <input 
                                     type="file" 
                                     multiple 
@@ -412,6 +431,25 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
                                     style={{ display: 'none' }}
                                     accept="image/*,video/*,audio/*,application/pdf,text/*"
                                 />
+                                {isToolsModalOpen && (
+                                    <div className="tools-modal">
+                                        <h3>Enable Tools</h3>
+                                        <div className="tool-option" onClick={() => toggleTool('generate_image')}>
+                                            <input type="checkbox" checked={enabledTools.includes('generate_image')} readOnly />
+                                            <div className="tool-info">
+                                                <div className="tool-name">Image Generation</div>
+                                                <div className="tool-desc">Create images using AI</div>
+                                            </div>
+                                        </div>
+                                        <div className="tool-option" onClick={() => toggleTool('math')}>
+                                            <input type="checkbox" checked={enabledTools.includes('math')} readOnly />
+                                            <div className="tool-info">
+                                                <div className="tool-name">Mathematical Calculations</div>
+                                                <div className="tool-desc">Perform complex math via tools</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                                 <textarea
                                     ref={textareaRef}
                                     value={input}
