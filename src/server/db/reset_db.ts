@@ -21,6 +21,16 @@ async function resetDatabase() {
     try {
       await client.query('BEGIN');
       // Drop in order of dependencies
+      await client.query('DROP TABLE IF EXISTS app_quotas CASCADE');
+      await client.query('DROP TABLE IF EXISTS user_quotas CASCADE');
+      await client.query('DROP TABLE IF EXISTS files CASCADE');
+      await client.query('DROP TABLE IF EXISTS local_paths CASCADE');
+      await client.query('DROP TABLE IF EXISTS ftp_endpoints CASCADE');
+      await client.query('DROP TABLE IF EXISTS http_credentials CASCADE');
+      await client.query('DROP TABLE IF EXISTS http_endpoints CASCADE');
+      await client.query('DROP TABLE IF EXISTS s3_credentials CASCADE');
+      await client.query('DROP TABLE IF EXISTS s3_buckets CASCADE');
+      await client.query('DROP TABLE IF EXISTS storage_volumes CASCADE');
       await client.query('DROP TABLE IF EXISTS attachments CASCADE');
       await client.query('DROP TABLE IF EXISTS messages CASCADE');
       await client.query('DROP TABLE IF EXISTS conversations CASCADE');
@@ -33,10 +43,13 @@ async function resetDatabase() {
       await client.query('DROP TABLE IF EXISTS users CASCADE');
       
       const sqlPath = path.join(__dirname, 'setup.sql');
+      const storageSqlPath = path.join(__dirname, 'storage_setup.sql');
       const sql = fs.readFileSync(sqlPath, 'utf8');
+      const storageSql = fs.readFileSync(storageSqlPath, 'utf8');
       
-      console.log('Executing fresh setup script...');
+      console.log('Executing fresh setup scripts...');
       await client.query(sql);
+      await client.query(storageSql);
       await client.query('COMMIT');
       console.log('Database reset and setup completed successfully.');
     } catch (err) {

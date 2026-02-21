@@ -9,6 +9,7 @@
     "dev:client": "vite",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "db:setup": "tsx src/server/db/init.ts",
+    "db:reset": "tsx src/server/db/reset_db.ts",
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build",
     "build:server": "tsc",
