@@ -5,12 +5,13 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 dotenv.config();
 
-import pg from 'pg';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
-import crypto from 'crypto';
 import chatRouter from './apps/chat/ChatRouter.js';
+import storageRouter from './apps/storage/StorageRouter.js';
+import { pool } from './db/pool.js';
+import { authenticateToken, hasPermission, getJwtSecret, AuthRequest, UserPayload } from './middleware/auth.js';
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -26,84 +27,6 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 app.use('/uploads', express.static(uploadDir));
-
-// Postgres Pool
-const { Pool } = pg;
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
-
-interface UserPayload {
-  id: string;
-  username: string;
-  is_root: boolean;
-  permissions: string[];
-  jti: string;
-}
-
-// Extend Request type to include user
-interface AuthRequest extends Request {
-  user?: UserPayload;
-}
-
-// Get or generate JWT Secret from DB
-let cachedSecret: string | null = null;
-const getJwtSecret = async () => {
-  if (cachedSecret) return cachedSecret;
-  
-  const res = await pool.query("SELECT value FROM system_config WHERE key = 'jwt_secret'");
-  if (res.rows.length > 0) {
-    cachedSecret = res.rows[0].value;
-    return cachedSecret!;
-  }
-
-  // Generate new secret if missing
-  const newSecret = crypto.randomBytes(64).toString('hex');
-  await pool.query(
-    "INSERT INTO system_config (key, value) VALUES ('jwt_secret', $1) ON CONFLICT (key) DO NOTHING",
-    [newSecret]
-  );
-  cachedSecret = newSecret;
-  return newSecret;
-};
-
-// Middleware to verify JWT
-const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) return res.status(401).json({ error: 'No token provided' });
-
-  try {
-    const secret = await getJwtSecret();
-    const user = jwt.verify(token, secret) as UserPayload;
-    
-    // Check if token is revoked
-    const revocation = await pool.query('SELECT 1 FROM revoked_tokens WHERE jti = $1', [user.jti]);
-    if (revocation.rows.length > 0) {
-      return res.status(401).json({ error: 'Token has been revoked' });
-    }
-
-    req.user = user;
-    next();
-  } catch (err: any) {
-    console.error('JWT Verification Error:', err.message);
-    return res.status(403).json({ error: 'Invalid or expired token', message: err.message });
-  }
-};
-
-const hasPermission = (user: UserPayload, action: string, resource: string) => {
-  if (user.is_root) return true;
-  
-  return user.permissions.some(perm => {
-    const [pAction, pResource] = perm.split(':');
-    
-    const actionMatch = pAction === '*' || pAction === action;
-    const resourceMatch = pResource === '*' || pResource === resource;
-    
-    return actionMatch && resourceMatch;
-  });
-};
 
 app.get('/api/setup/status', async (req, res) => {
   try {
@@ -361,6 +284,16 @@ app.use('/api/chat', authenticateToken, (req, res, next) => {
     res.status(403).json({ error: 'Unauthorized' });
   }
 }, chatRouter);
+
+// Storage App Routes
+app.use('/api/storage', authenticateToken, (req, res, next) => {
+  const user = (req as AuthRequest).user as UserPayload;
+  if (hasPermission(user, 'read', 'storage') || hasPermission(user, 'upload', 'storage') || hasPermission(user, 'manage', 'storage')) {
+    next();
+  } else {
+    res.status(403).json({ error: 'Unauthorized' });
+  }
+}, storageRouter);
 
 // Admin Role Management Endpoints
 app.get('/api/admin/roles', authenticateToken, async (req, res) => {

@@ -19,7 +19,7 @@ export class DiskDriver implements StorageDriver {
         return fullPath;
     }
 
-    async saveFile(filepath: string, buffer: Buffer): Promise<void> {
+    async saveFile(filepath: string, buffer: Buffer, mimeType?: string): Promise<void> {
         const fullPath = this.resolve(filepath);
         const dir = path.dirname(fullPath);
         await fs.mkdir(dir, { recursive: true });
@@ -44,8 +44,6 @@ export class DiskDriver implements StorageDriver {
     }
 
     async list(prefix: string): Promise<string[]> {
-        // Implementation for recursive list is tricky with flat fs, 
-        // keeping it simple for now (one level deep or implement full walk later)
         const fullPath = this.resolve(prefix);
         try {
             const files = await fs.readdir(fullPath);
@@ -53,5 +51,10 @@ export class DiskDriver implements StorageDriver {
         } catch {
             return [];
         }
+    }
+
+    async streamFile(filepath: string): Promise<NodeJS.ReadableStream> {
+        const fsReadStream = (await import('fs')).createReadStream(this.resolve(filepath));
+        return fsReadStream as unknown as NodeJS.ReadableStream;
     }
 }

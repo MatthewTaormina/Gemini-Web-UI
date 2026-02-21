@@ -11,6 +11,8 @@ Defines logical storage locations (local disk, S3 buckets, etc.).
 | :--- | :--- | :--- |
 | `id` | UUID | Primary Key |
 | `name` | VARCHAR(100) | Unique name for the volume |
+| `owner_user_id` | UUID | FK to `users(id)` (NULL for global/app volumes) |
+| `owner_app_id` | VARCHAR(100) | ID of the app this volume belongs to (e.g., 'cloud-drive') |
 | `driver` | VARCHAR(20) | 'local', 's3', 'ftp', 'http' |
 | `config` | JSONB | Driver-specific configuration (e.g., root path for local) |
 | `default_prefix` | TEXT | Optional prefix prepended to all file paths on this volume |

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(255) UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     is_root BOOLEAN NOT NULL DEFAULT false,
+    is_system BOOLEAN NOT NULL DEFAULT false,
     enabled BOOLEAN NOT NULL DEFAULT true,
     failed_login_attempts INTEGER NOT NULL DEFAULT 0,
     lockout_until TIMESTAMP WITH TIME ZONE,
@@ -56,24 +57,30 @@ CREATE TABLE IF NOT EXISTS user_roles (
     PRIMARY KEY (user_id, role_id)
 );
 
--- Ensure only one root user exists
+-- Ensure only one root and system user exists
 CREATE UNIQUE INDEX singleton_root_user ON users (is_root) WHERE is_root = true;
+CREATE UNIQUE INDEX singleton_system_user ON users (is_system) WHERE is_system = true;
 
--- Prevent deletion of root user
-CREATE OR REPLACE FUNCTION protect_root_user()
+-- Prevent deletion of root and system user
+CREATE OR REPLACE FUNCTION protect_reserved_users()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF (OLD.is_root = true) THEN
-        RAISE EXCEPTION 'The root user cannot be deleted or soft-deleted.';
+    IF (OLD.is_root = true OR OLD.is_system = true) THEN
+        RAISE EXCEPTION 'Reserved users (root or system) cannot be deleted or soft-deleted.';
     END IF;
     RETURN OLD;
 END;
 $$ language 'plpgsql';
 
-CREATE TRIGGER trg_protect_root_user
+CREATE TRIGGER trg_protect_reserved_users
     BEFORE DELETE OR UPDATE OF deleted_at ON users
     FOR EACH ROW
-    EXECUTE FUNCTION protect_root_user();
+    EXECUTE FUNCTION protect_reserved_users();
+
+-- Seed system user
+INSERT INTO users (username, password_hash, is_system, enabled) VALUES
+    ('system', 'SYSTEM_ACCOUNT_LOCKED', true, true)
+ON CONFLICT (username) DO NOTHING;
 
 -- Seed initial permissions
 INSERT INTO permissions (name, action, resource, description) VALUES

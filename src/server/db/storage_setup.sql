@@ -5,6 +5,8 @@
 CREATE TABLE IF NOT EXISTS storage_volumes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(100) UNIQUE NOT NULL,
+    owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    owner_app_id VARCHAR(100), -- ID of the app this volume belongs to (e.g., 'cloud-drive')
     driver VARCHAR(20) NOT NULL CHECK (driver IN ('local', 's3', 'ftp', 'http')),
     config JSONB NOT NULL DEFAULT '{}'::jsonb,
     default_prefix TEXT,
@@ -140,4 +142,10 @@ INSERT INTO permissions (name, action, resource, description) VALUES
     ('manage:storage', 'manage', 'storage', 'Configure storage volumes and quotas'),
     ('upload:storage', 'create', 'storage', 'Upload files to storage'),
     ('delete:storage', 'delete', 'storage', 'Delete files from storage')
+ON CONFLICT (name) DO NOTHING;
+
+-- Seed default system volume
+INSERT INTO storage_volumes (name, owner_user_id, owner_app_id, driver, config, is_active)
+SELECT 'system-assets', id, 'system', 'local', '{"local_path": "./storage_data/system"}'::jsonb, true
+FROM users WHERE is_system = true
 ON CONFLICT (name) DO NOTHING;
