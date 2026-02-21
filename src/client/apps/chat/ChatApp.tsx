@@ -317,7 +317,7 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
                                         </div>
                                         {msg.attachments && msg.attachments.length > 0 && (
                                             <div className="message-attachments">
-                                                {msg.attachments.map(att => (
+                                                {msg.attachments.filter(att => !msg.content.includes(att.file_name)).map(att => (
                                                     <div key={att.id} className="attachment-item">
                                                         {att.file_type.startsWith('image/') ? (
                                                             <div className="image-attachment-wrapper">
