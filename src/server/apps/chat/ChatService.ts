@@ -130,6 +130,8 @@ export class ChatService {
         const modelName = convRes.rows[0].model || 'gemini-3.1-pro-preview';
         const isFirstMessage = parseInt(convRes.rows[0].msg_count) === 0;
 
+        console.log(`[ChatService] sendMessage: convId=${conversationId}, model=${modelName}, tools=${enabledTools}`);
+
         // 1. Save user message
         const msgRes = await pool.query(
           "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
@@ -152,7 +154,7 @@ export class ChatService {
               currentMessageAttachments.push({
                   inlineData: { data: fileBuffer.toString('base64'), mimeType: file.mimetype }
               });
-          } catch (e) { console.error(e); }
+          } catch (e) { console.error(`[ChatService] Failed to read uploaded file ${file.path}:`, e); }
         }
 
         // 2. Fetch history and build contents
@@ -171,27 +173,27 @@ export class ChatService {
 
         const contents = await Promise.all(historyRes.rows.map(async (row) => {
           const parts: any[] = [];
-          
           let contentText = row.content || "";
+          
           for (const att of row.attachments) {
             if (att.file_type.startsWith('image/')) {
                 const alias = `IMG_${imgCounter++}`;
                 aliasRegistry[alias] = { path: att.file_path, filename: att.file_name };
-                // Ensure model knows about the alias
                 if (!contentText.includes(alias)) {
                     contentText += `\n[Context: Image ${alias}]`;
                 }
-                
                 try {
                   const fileBuffer = await fs.readFile(att.file_path);
                   parts.push({ inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } });
-                } catch (e) {}
+                } catch (e) { console.warn(`[ChatService] Could not find file for alias ${alias}: ${att.file_path}`); }
             }
           }
           if (contentText) parts.unshift({ text: contentText });
           if (parts.length === 0) parts.push({ text: "" });
           return { role: row.role === 'model' ? 'model' : 'user', parts };
         }));
+
+        console.log(`[ChatService] Built context with ${Object.keys(aliasRegistry).length} images in registry.`);
 
         if (modelName.includes('-image')) {
             return this.handleDirectImageGeneration(conversationId, modelName, message, currentMessageAttachments);
@@ -225,7 +227,7 @@ export class ChatService {
         }
 
         if (enabledTools.includes('math')) {
-            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for math.\n" +
+            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for math calculations.\n" +
                                      "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"...\"}}";
             
             tools.push({
@@ -257,6 +259,7 @@ export class ChatService {
 
         const responseParts = result.candidates[0].content?.parts || [];
         const textPartsRaw = responseParts.filter((p: any) => p.text).map((p: any) => p.text).join("\n");
+        console.log(`[ChatService] Raw model text output: "${textPartsRaw.substring(0, 100)}..."`);
         
         // 5. Parse tool calls
         const findJsonObjects = (text: string) => {
@@ -331,6 +334,7 @@ export class ChatService {
 
         const formalToolCalls = responseParts.filter((p: any) => p.functionCall).map((p: any) => p.functionCall);
         for (const ftc of formalToolCalls) {
+            console.log(`[ChatService] Formal function call: ${ftc.name}`, ftc.args);
             if (ftc.name === 'generate_image') {
                 const prompt = cleanPrompt(ftc.args);
                 toolCalls.push({ name: 'generate_image', args: { ...ftc.args, prompt } });
@@ -348,6 +352,7 @@ export class ChatService {
         let finalDisplayContent = cleanedText;
 
         if (toolCalls.length > 0) {
+            console.log(`[ChatService] Executing ${toolCalls.length} tool calls.`);
             for (const toolCall of toolCalls) {
                 if (toolCall.name === 'generate_image') {
                     const { prompt: imgPrompt, source_image } = toolCall.args;
@@ -357,24 +362,28 @@ export class ChatService {
                         try {
                             const buffer = await fs.readFile(aliasRegistry[source_image].path);
                             activeContext = [{ inlineData: { data: buffer.toString('base64'), mimeType: 'image/png' } }];
-                        } catch (e) {}
+                            console.log(`[ChatService] Using specific source_image alias ${source_image}`);
+                        } catch (e) { console.error(`[ChatService] Failed to load source_image ${source_image}:`, e); }
                     }
                     if (activeContext.length === 0) {
                         activeContext = currentMessageAttachments.length > 0 ? currentMessageAttachments : (Object.values(aliasRegistry).length > 0 ? [{ inlineData: { data: (await fs.readFile(Object.values(aliasRegistry).pop()!.path)).toString('base64'), mimeType: 'image/png' } }] : []);
+                        console.log(`[ChatService] Falling back to default context (${activeContext.length} images)`);
                     }
 
                     const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, activeContext);
                     if (result && result.markdown) {
                         allAttachments.push(...(result.attachments || []));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + result.markdown;
+                        console.log(`[ChatService] Generation success: ${result.markdown}`);
+                    } else {
+                        console.error(`[ChatService] Generation failed for prompt: "${imgPrompt}"`);
                     }
                 } else if (toolCall.name === 'calculate') {
                     const { expression } = toolCall.args;
                     try {
-                        // eslint-disable-next-line no-eval
                         const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + `The result of ${expression} is **${evalResult}**.`;
-                    } catch (e) {}
+                    } catch (e) { console.error(`[ChatService] Math failed: ${expression}`, e); }
                 }
             }
 
@@ -394,6 +403,7 @@ export class ChatService {
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
             return { response: finalDisplayContent, attachments: allAttachments, id: messageId };
         } else {
+            console.log(`[ChatService] No tools called. Resolving labels only.`);
             for (const [alias, meta] of Object.entries(aliasRegistry)) {
                 const md = `![Image](${this.getImageUrl(meta.filename)})`;
                 const regex = new RegExp("\\b" + alias + "\\b", "g");
@@ -418,6 +428,8 @@ export class ChatService {
             try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
         }).trim();
 
+        console.log(`[ChatService] Handoff to ${imageModelId}. Prompt: "${internalCleanedPrompt}", Context: ${lastImageContext.length} images`);
+
         const result = await ai.models.generateContent({
             model: imageModelId,
             contents: [{ 
@@ -431,6 +443,7 @@ export class ChatService {
         
         const imagePart = result.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
         if (imagePart) {
+            console.log(`[ChatService] Handoff success. Image data size: ${imagePart.inlineData.data.length}`);
             const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
             const filename = `gen-${uuidv4()}.png`;
             const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
@@ -440,6 +453,8 @@ export class ChatService {
             const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
             const markdown = `![Generated Image](${this.getImageUrl(filename)})`;
             return { attachments: [att], markdown };
+        } else {
+            console.warn(`[ChatService] Handoff returned no image part.`);
         }
     } catch (err) { console.error(`[ChatService] Handoff failed:`, err.message); }
     return null;
@@ -451,6 +466,8 @@ export class ChatService {
         const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
             try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
         }).trim();
+
+        console.log(`[ChatService] Direct Generation with ${modelId}. Prompt: "${internalCleanedPrompt}", Context: ${lastImageContext.length} images`);
 
         const result = await ai.models.generateContent({
             model: modelId,
@@ -465,6 +482,7 @@ export class ChatService {
         
         const imagePart = result.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
         if (imagePart) {
+            console.log(`[ChatService] Direct success. Image data size: ${imagePart.inlineData.data.length}`);
             const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
             const filename = `gen-${uuidv4()}.png`;
             const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
@@ -477,6 +495,8 @@ export class ChatService {
             const messageId = res.rows[0].id;
             await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
             return { response: markdown, attachments: [att], id: messageId };
+        } else {
+            console.warn(`[ChatService] Direct returned no image part.`);
         }
     } catch (err) { console.error(`[ChatService] Direct failed:`, err.message); }
     const failMsg = "Image generation failed.";
