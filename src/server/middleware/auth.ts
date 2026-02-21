@@ -72,3 +72,16 @@ export const hasPermission = (user: UserPayload, action: string, resource: strin
     return actionMatch && resourceMatch;
   });
 };
+
+export const requirePermission = (action: string, resource: string) => {
+  return (req: AuthRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+    if (hasPermission(req.user, action, resource)) {
+      next();
+    } else {
+      res.status(403).json({ error: 'Forbidden' });
+    }
+  };
+};
+
