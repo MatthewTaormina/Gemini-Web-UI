@@ -285,25 +285,21 @@ export class ChatService {
         const cleanPrompt = (p: any): string => {
             if (!p) return "";
             if (typeof p === 'object') {
-                const val = p.prompt || p.description || p.text || p.action_input?.prompt || p.action_input || JSON.stringify(p);
+                const val = p.prompt || p.description || p.text || p.action_input?.prompt || p.action_input || p.args?.prompt || JSON.stringify(p);
                 return cleanPrompt(val);
             }
             let str = String(p).trim();
-            if (str.startsWith('{') && str.endsWith('}')) {
+            if ((str.startsWith('{') && str.endsWith('}')) || (str.startsWith('"{') && str.endsWith('}"'))) {
                 try {
-                    const parsed = JSON.parse(str);
+                    const inner = str.startsWith('"{') ? JSON.parse(str) : str;
+                    const parsed = typeof inner === 'string' ? JSON.parse(inner) : inner;
                     return cleanPrompt(parsed);
                 } catch (e) {}
             }
             str = str.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
             str = str.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
-            if (str.includes('": "')) {
-                try {
-                   const wrapped = JSON.parse(`{${str}}`);
-                   return cleanPrompt(wrapped);
-                } catch(e) {}
-            }
-            return str;
+            str = str.replace(/^Prompt:\s*/i, '');
+            return str.trim();
         };
 
         const foundObjects = findJsonObjects(textPartsRaw);
@@ -312,7 +308,8 @@ export class ChatService {
 
         for (const obj of foundObjects) {
             const data = obj.data;
-            const isImageTool = data.name === 'generate_image' || data.action === 'generate_image' || 
+            const isImageTool = data.name === 'generate_image' || data.name === 'generate_images' || 
+                               data.action === 'generate_image' || data.action === 'generate_images' || 
                                data.action === 'dalle.text2im' || data.action === 'image_gen' || data.action === 'text2im';
             const isMathTool = data.name === 'calculate' || data.action === 'calculate';
             
@@ -361,7 +358,8 @@ export class ChatService {
             for (const toolCall of toolCalls) {
                 if (toolCall.name === 'generate_image') {
                     const { prompt: imgPrompt, count = 1 } = toolCall.args;
-                    const result = await this.performImageModelHandoff(conversationId, imgPrompt, count, focusImages);
+                    const finalizedPrompt = cleanPrompt(imgPrompt);
+                    const result = await this.performImageModelHandoff(conversationId, finalizedPrompt, count, focusImages);
                     allAttachments.push(...(result.attachments || []));
                     finalResponseText += (finalResponseText ? "\n\n" : "") + result.response;
                     lastMsgId = result.id;
