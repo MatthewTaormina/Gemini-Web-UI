@@ -168,31 +168,40 @@ export class ChatService {
           ORDER BY m.created_at ASC
         `, [conversationId]);
 
-        const aliasRegistry: Record<string, { path: string, filename: string }> = {};
+        const aliasRegistry: Record<string, { path: string, filename: string, type: string }> = {};
         let imgCounter = 1;
 
-        const contents = await Promise.all(historyRes.rows.map(async (row) => {
+        const contents = await Promise.all(historyRes.rows.map(async (row, idx) => {
           const parts: any[] = [];
           
+          // Strip system-generated links from history
           let contentText = (row.content || "").replace(/!\[.*?\]\(.*?\)/g, "").trim();
           
           for (const att of row.attachments) {
             if (att.file_type.startsWith('image/')) {
                 const alias = `IMG_${imgCounter++}`;
-                aliasRegistry[alias] = { path: att.file_path, filename: att.file_name };
+                aliasRegistry[alias] = { path: att.file_path, filename: att.file_name, type: att.file_type };
                 if (!contentText.includes(alias)) {
                     contentText += `\n[Context: Image ${alias}]`;
                 }
-                try {
-                  const fileBuffer = await fs.readFile(att.file_path);
-                  parts.push({ inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } });
-                } catch (e) { console.warn(`[ChatService] Context file error: ${att.file_path}`); }
+                
+                // ONLY include ACTUAL image data if it is from the VERY LAST message
+                // This prevents payload explosion while maintaining tool awareness
+                const isCurrentTurn = idx === historyRes.rows.length - 1;
+                if (isCurrentTurn) {
+                    try {
+                      const fileBuffer = await fs.readFile(att.file_path);
+                      parts.push({ inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } });
+                    } catch (e) { console.warn(`[ChatService] Context file error: ${att.file_path}`); }
+                }
             }
           }
           if (contentText) parts.unshift({ text: contentText });
           if (parts.length === 0) parts.push({ text: "" });
           return { role: row.role === 'model' ? 'model' : 'user', parts };
         }));
+
+        console.log(`[ChatService] Context built. Registry has ${Object.keys(aliasRegistry).length} images.`);
 
         if (modelName.includes('-image')) {
             return this.handleDirectImageGeneration(conversationId, modelName, message, currentMessageAttachments);
@@ -203,22 +212,21 @@ export class ChatService {
         let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nCRITICAL: You MUST use 'generate_image(prompt, source_image)' whenever the user asks to create, draw, imagine, or edit an image.\n" +
-                                   "If the user says 'draw a cat', call the tool.\n" +
-                                   "If the user says 'make it blue' referring to a previous image, call the tool with the correct 'source_image' label.\n" +
-                                   "Existing images in context are labeled 'IMG_1', 'IMG_2', etc.\n" +
-                                   "NEVER write Markdown (![...](...)) or URLs yourself. The system handles all image rendering.\n" +
-                                   "ONLY output text. If you want to show an image, use the tool. DO NOT hallucinate file paths.";
+          systemInstructionText += "\n\nCRITICAL: To create or modify images, you MUST use 'generate_image(prompt, source_image)'.\n" +
+                                   "Images in the conversation are labeled 'IMG_1', 'IMG_2', etc.\n" +
+                                   "If the user wants to edit or refer to an existing image, pass its label to 'source_image'.\n" +
+                                   "NEVER write Markdown (![...](...)) or URLs yourself. You do not have permission.\n" +
+                                   "NEVER repeat system labels like '[Context: Image IMG_N]' in your response.";
           
           tools.push({
             functionDeclarations: [{
               name: "generate_image",
-              description: "Generates or edits a single image. Use 'source_image' label (e.g. IMG_1) for contextual edits.",
+              description: "Generates a single image. Use label (e.g. IMG_1) in source_image for contextual edits.",
               parameters: {
                 type: "object",
                 properties: {
                   prompt: { type: "string", description: "Detailed description of the image to generate." },
-                  source_image: { type: "string", description: "Optional: label of a previous image (e.g. IMG_1) to use as base context for an edit." }
+                  source_image: { type: "string", description: "Optional: label of a previous image (e.g. IMG_1) to use as base context." }
                 },
                 required: ["prompt"]
               }
@@ -227,7 +235,7 @@ export class ChatService {
         }
 
         if (enabledTools.includes('math')) {
-            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for any math or calculations.\n" +
+            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for math.\n" +
                                      "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"...\"}}";
             
             tools.push({
@@ -259,6 +267,7 @@ export class ChatService {
 
         const responseParts = result.candidates[0].content?.parts || [];
         const textPartsRaw = responseParts.filter((p: any) => p.text).map((p: any) => p.text).join("\n");
+        console.log(`[ChatService] Raw model output: "${textPartsRaw.substring(0, 100)}..."`);
         
         // 5. Parse tool calls
         const findJsonObjects = (text: string) => {
@@ -341,7 +350,7 @@ export class ChatService {
             }
         }
 
-        // 6. Cleanup model output
+        // 6. Aggressive Cleanup
         let cleanedText = textPartsRaw;
         for (const s of jsonStringsToStrip) cleanedText = cleanedText.replace(s, "");
         cleanedText = cleanedText.replace(/!\[.*?\]\(.*?\)/g, ""); // Strip hallucinated links
@@ -351,19 +360,24 @@ export class ChatService {
         let finalDisplayContent = cleanedText;
 
         if (toolCalls.length > 0) {
+            console.log(`[ChatService] Executing ${toolCalls.length} tool calls.`);
             for (const toolCall of toolCalls) {
                 if (toolCall.name === 'generate_image') {
                     const { prompt: imgPrompt, source_image } = toolCall.args;
                     let activeContext: any[] = [];
                     
+                    // Resolve source_image alias if provided
                     if (source_image && aliasRegistry[source_image]) {
                         try {
                             const buffer = await fs.readFile(aliasRegistry[source_image].path);
-                            activeContext = [{ inlineData: { data: buffer.toString('base64'), mimeType: 'image/png' } }];
+                            activeContext = [{ inlineData: { data: buffer.toString('base64'), mimeType: aliasRegistry[source_image].type } }];
+                            console.log(`[ChatService] Resolved context alias ${source_image}`);
                         } catch (e) {}
                     }
+                    
+                    // Fallback to current turn images if no specific alias matched
                     if (activeContext.length === 0) {
-                        activeContext = currentMessageAttachments.length > 0 ? currentMessageAttachments : (Object.values(aliasRegistry).length > 0 ? [{ inlineData: { data: (await fs.readFile(Object.values(aliasRegistry).pop()!.path)).toString('base64'), mimeType: 'image/png' } }] : []);
+                        activeContext = currentMessageAttachments;
                     }
 
                     const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, activeContext);
@@ -381,11 +395,11 @@ export class ChatService {
             }
         }
 
-        for (const [alias, meta] of Object.entries(aliasRegistry)) {
+        // Final Post-process: Aggressively strip system labels from final display
+        for (const alias of Object.keys(aliasRegistry)) {
             const contextRegex = new RegExp("\\[Context:\\s*Image\\s*" + alias + "\\]", "gi");
             finalDisplayContent = finalDisplayContent.replace(contextRegex, "");
         }
-        
         finalDisplayContent = finalDisplayContent.replace(/\n\s*\n\s*\n/g, "\n\n").trim();
 
         const modelMsgRes = await pool.query(
@@ -416,6 +430,8 @@ export class ChatService {
         const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
             try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
         }).trim();
+
+        console.log(`[ChatService] Calling ${imageModelId} with context size ${lastImageContext.length}`);
 
         const result = await ai.models.generateContent({
             model: imageModelId,
