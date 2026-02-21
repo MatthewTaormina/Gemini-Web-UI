@@ -133,11 +133,11 @@ export class ChatService {
         console.log(`[ChatService] sendMessage: convId=${conversationId}, model=${modelName}`);
 
         // 1. Save user message
-        const msgRes = await pool.query(
+        const userMsgRes = await pool.query(
           "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
           [conversationId, 'user', message]
         );
-        const messageId = msgRes.rows[0].id;
+        const userMessageId = userMsgRes.rows[0].id;
 
         if (isFirstMessage) {
           this.generateTitle(conversationId, message).catch(console.error);
@@ -147,7 +147,7 @@ export class ChatService {
         for (const file of files) {
           await pool.query(
             "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
-            [messageId, conversationId, file.filename, file.path, file.mimetype, file.size]
+            [userMessageId, conversationId, file.filename, file.path, file.mimetype, file.size]
           );
           try {
               const fileBuffer = await fs.readFile(file.path);
@@ -174,7 +174,6 @@ export class ChatService {
         const contents = await Promise.all(historyRes.rows.map(async (row) => {
           const parts: any[] = [];
           
-          // Aggressively strip ANY markdown image syntax from history to prevent hallucination
           let contentText = (row.content || "").replace(/!\[.*?\]\(.*?\)/g, "").trim();
           
           for (const att of row.attachments) {
@@ -204,21 +203,22 @@ export class ChatService {
         let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nCRITICAL: To create or modify images, you MUST use 'generate_image(prompt, source_image)'.\n" +
-                                   "Existing images are labeled 'IMG_1', 'IMG_2', etc.\n" +
-                                   "To refer to an image, pass its label to 'source_image'.\n" +
-                                   "DO NOT write Markdown image syntax (![...](...)) or URLs like '/uploads/...' yourself. YOU LACK PERMISSION.\n" +
-                                   "ONLY output text. If you want to show an image, use the tool. The system will handle the rest.";
+          systemInstructionText += "\n\nCRITICAL: You MUST use 'generate_image(prompt, source_image)' whenever the user asks to create, draw, imagine, or edit an image.\n" +
+                                   "If the user says 'draw a cat', call the tool.\n" +
+                                   "If the user says 'make it blue' referring to a previous image, call the tool with the correct 'source_image' label.\n" +
+                                   "Existing images in context are labeled 'IMG_1', 'IMG_2', etc.\n" +
+                                   "NEVER write Markdown (![...](...)) or URLs yourself. The system handles all image rendering.\n" +
+                                   "ONLY output text. If you want to show an image, use the tool. DO NOT hallucinate file paths.";
           
           tools.push({
             functionDeclarations: [{
               name: "generate_image",
-              description: "Generates a single image. Use label (e.g. IMG_1) in source_image for contextual edits.",
+              description: "Generates or edits a single image. Use 'source_image' label (e.g. IMG_1) for contextual edits.",
               parameters: {
                 type: "object",
                 properties: {
-                  prompt: { type: "string", description: "Detailed description of the image." },
-                  source_image: { type: "string", description: "Optional: label of a previous image (e.g. IMG_1) to use as base context." }
+                  prompt: { type: "string", description: "Detailed description of the image to generate." },
+                  source_image: { type: "string", description: "Optional: label of a previous image (e.g. IMG_1) to use as base context for an edit." }
                 },
                 required: ["prompt"]
               }
@@ -227,7 +227,7 @@ export class ChatService {
         }
 
         if (enabledTools.includes('math')) {
-            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for math.\n" +
+            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for any math or calculations.\n" +
                                      "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"...\"}}";
             
             tools.push({
@@ -259,7 +259,6 @@ export class ChatService {
 
         const responseParts = result.candidates[0].content?.parts || [];
         const textPartsRaw = responseParts.filter((p: any) => p.text).map((p: any) => p.text).join("\n");
-        console.log(`[ChatService] Raw Output: "${textPartsRaw.substring(0, 100)}..."`);
         
         // 5. Parse tool calls
         const findJsonObjects = (text: string) => {
@@ -342,13 +341,10 @@ export class ChatService {
             }
         }
 
-        // 6. Aggressive Cleanup of Hallucinations
+        // 6. Cleanup model output
         let cleanedText = textPartsRaw;
-        // 6a. Strip system strings
         for (const s of jsonStringsToStrip) cleanedText = cleanedText.replace(s, "");
-        // 6b. Aggressively strip ANY markdown image links the model tried to write itself
-        cleanedText = cleanedText.replace(/!\[.*?\]\(.*?\)/g, "");
-        // 6c. Clean markdown blocks
+        cleanedText = cleanedText.replace(/!\[.*?\]\(.*?\)/g, ""); // Strip hallucinated links
         cleanedText = cleanedText.replace(/```json\s*```/g, "").replace(/```\s*```/g, "").trim();
 
         const allAttachments: any[] = [];
@@ -385,8 +381,6 @@ export class ChatService {
             }
         }
 
-        // Resolving labels only (stripping metadata, but NOT replacing aliases with images unless they were mentioned)
-        // Note: We removed the alias-to-markdown replacement in text to fulfill "only output link after tool call"
         for (const [alias, meta] of Object.entries(aliasRegistry)) {
             const contextRegex = new RegExp("\\[Context:\\s*Image\\s*" + alias + "\\]", "gi");
             finalDisplayContent = finalDisplayContent.replace(contextRegex, "");
@@ -394,10 +388,17 @@ export class ChatService {
         
         finalDisplayContent = finalDisplayContent.replace(/\n\s*\n\s*\n/g, "\n\n").trim();
 
-        const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent || "No response received."]);
-        const modelMessageId = res.rows[0].id;
+        const modelMsgRes = await pool.query(
+            "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", 
+            [conversationId, 'model', finalDisplayContent || "No response received."]
+        );
+        const modelMessageId = modelMsgRes.rows[0].id;
+
         for (const att of allAttachments) {
-            await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
+            await pool.query(
+                "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", 
+                [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
+            );
         }
         await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
         return { response: finalDisplayContent || "No response received.", attachments: allAttachments, id: modelMessageId };
@@ -471,15 +472,21 @@ export class ChatService {
             
             const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
             const markdown = `![Generated Image](${this.getImageUrl(filename)})`;
-            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', markdown]);
-            const modelMessageId = res.rows[0].id;
-            await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
+            const modelMsgRes = await pool.query(
+                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", 
+                [conversationId, 'model', markdown]
+            );
+            const modelMessageId = modelMsgRes.rows[0].id;
+            await pool.query(
+                "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", 
+                [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
+            );
             return { response: markdown, attachments: [att], id: modelMessageId };
         }
     } catch (err) { console.error(`[ChatService] Direct failed:`, err.message); }
     const failMsg = "Image generation failed.";
-    const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', failMsg]);
-    return { response: failMsg, attachments: [], id: res.rows[0].id };
+    const failRes = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', failMsg]);
+    return { response: failMsg, attachments: [], id: failRes.rows[0].id };
   }
 
   async deleteConversation(conversationId: string, userId: string) {
