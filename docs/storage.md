@@ -1,59 +1,63 @@
 # Storage Service
 
-The Gemini Web UI includes a built-in, abstracted Storage Service that handles all file-related operations with a focus on isolation and extensibility.
+The Gemini Web UI includes a built-in, abstracted Storage Service that handles all file-related operations with a focus on logical isolation, multi-backend support, and quota management.
 
-## 1. Driver-Based Architecture
+## 1. Volume-Based Architecture
 
-The service uses a **Driver-Based Architecture**, allowing it to support multiple storage backends through a single, unified interface (`StorageDriver.ts`).
+The system is built around **Storage Volumes**, which are logical storage locations mapped to specific drivers. A volume can be global or owned by a specific user and/or application.
 
-### 1.1 `DiskDriver.ts`
-The current default implementation for local development and self-hosted environments.
-- **Root Path**: Configurable via the `STORAGE_PATH` environment variable.
-- **Security**: Resolves all file paths against the root to prevent directory traversal attacks.
-- **Recursive Directory Support**: Automatically creates directories when saving files.
+### 1.1 Multi-Driver Support
+The service supports multiple storage backends through a unified interface (`StorageDriver.ts`):
+- **`DiskDriver.ts`**: Local filesystem storage. Supports direct streaming.
+- **`S3Driver.ts`**: AWS S3 and S3-compatible services (MinIO, etc.). Supports streaming and **Presigned URLs** for efficient delivery.
+- **Planned Drivers**: FTP/SFTP and HTTP/WebDAV.
 
-### 1.2 `S3Driver.ts` (Planned)
-Future driver for AWS S3 and other S3-compatible object storage services (MinIO, DigitalOcean Spaces).
+### 1.2 Hybrid Delivery
+Files are served through a centralized `/storage/file/:id` endpoint. The delivery strategy depends on the backend:
+- **Local/Disk**: The server proxies the file stream directly to the client.
+- **S3**: The server generates a temporary presigned URL and redirects (302) the client for direct download, offloading bandwidth.
 
 ---
 
-## 2. Isolation & Namespacing
+## 2. Ownership & Quotas
 
-The `StorageService` enforces a strict, hierarchical path structure to ensure data is isolated between different sub-apps and individual users.
+Volumes and files are managed with strict ownership and usage tracking.
 
-### 2.1 Apps Namespace (`/apps`)
-Internal application data that is not directly accessible by users.
-- **Path**: `apps/{appId}/{filename}`
-- **Isolation**: Each sub-app (Chat, Notes, etc.) is siloed within its own subdirectory.
+### 2.1 Dual-Ownership
+Volumes can belong to both a **User** and an **App** simultaneously. For example, a user's Chat uploads are stored in a volume owned by that user and the "Chat" application.
 
-### 2.2 User Namespace (`/users`)
-A "Personal Cloud" storage area for individual user files.
-- **Path**: `users/{userId}/{filename}`
-- **Isolation**: Users can only access their own files within their unique UUID directory.
+### 2.2 Quota Enforcement
+The system tracks storage usage at three levels:
+- **Volume Level**: Total capacity of the logical volume.
+- **User Quota**: Per-user limits on a specific volume.
+- **App Quota**: Per-app limits on a specific volume.
 
 ---
 
 ## 3. Storage API
 
-All file operations should be performed through the `StorageService` facade, which provides the following methods:
+All file operations should be performed through the `StorageService` or the `/storage` API.
 
-- **`saveUserFile(userId: string, filename: string, buffer: Buffer)`**: Save a file for a specific user.
-- **`saveAppFile(appId: string, filename: string, buffer: Buffer)`**: Save a file for an internal app.
-- **`getUserFile(userId: string, filename: string)`**: Retrieve a file for a specific user.
-- **`getAppFile(appId: string, filename: string)`**: Retrieve a file for an internal app.
+### 3.1 Server-Side (`StorageService.ts`)
+- **`uploadFile(params)`**: Saves a file buffer to a volume and records metadata.
+- **`getFileStream(fileId)`**: Returns a readable stream for a file.
+- **`getFileUrl(fileId)`**: Returns a public or internal URL for a file.
+- **`deleteFile(fileId)`**: Removes file from storage and cleans up database records.
+
+### 3.2 REST API
+- **`POST /storage/upload`**: Upload a file (requires multipart/form-data).
+- **`GET /storage/file/:id`**: Retrieve/stream a file. Supports authentication via `Authorization` header or `?token=` query parameter (for `<img>` tags).
+- **`GET /storage/volumes`**: Manage storage configurations.
 
 ---
 
-## 4. Git Ignore & Retention
+## 4. Security
 
-To prevent large binary files or sensitive user data from being committed to the repository, certain directories are explicitly ignored by Git.
+- **Authenticated Access**: All storage endpoints require a valid JWT.
+- **Query Param Auth**: To support markdown-rendered images, the `/storage/file/:id` endpoint accepts a `token` query parameter for cases where headers cannot be set (e.g., standard browser `<img>` requests).
+- **Reserved Identities**: The system includes a reserved **`system` user** and **`system` app** for core assets and global configurations.
 
-### 4.1 `storage_data/chat_uploads/`
-Contains all user-uploaded and AI-generated images for the Chat application.
-- **Status**: Ignored.
-- **Access**: Managed via the Chat application's internal database for mapping UUID filenames to original metadata.
+---
 
-### 4.2 `references/`
-Contains official UI references, screenshots, and design assets.
-- **Status**: Ignored.
-- **Usage**: Local development and design-consistency testing only.
+## 5. Storage Schema
+Detailed database documentation can be found in [docs/database/storage.md](./database/storage.md).
