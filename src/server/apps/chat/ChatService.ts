@@ -169,7 +169,6 @@ export class ChatService {
           const parts: any[] = [];
           if (row.content) parts.push({ text: row.content });
           
-          // Only include images for the very last few messages to avoid massive payloads
           const isRecent = idx >= historyRes.rows.length - 2;
           if (isRecent) {
               for (const att of row.attachments) {
@@ -177,7 +176,7 @@ export class ChatService {
                   const fileBuffer = await fs.readFile(att.file_path);
                   const inlinePart = { inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } };
                   parts.push(inlinePart);
-                  if (att.file_type.startsWith('image/')) allHistoryImages.push(inlinePart);
+                  if (att.file_type.startsWith('image/')) allHistoryImages.push({ part: inlinePart, id: att.file_name });
                 } catch (e) {}
               }
           }
@@ -189,8 +188,7 @@ export class ChatService {
         if (currentMessageAttachments.length > 0) {
             focusImages = currentMessageAttachments;
         } else {
-            // Context for image generation: just the last 1-2 images
-            focusImages = allHistoryImages.slice(-2); 
+            focusImages = allHistoryImages.map(h => h.part).slice(-2); 
         }
 
         if (modelName.includes('-image')) {
@@ -201,20 +199,20 @@ export class ChatService {
         let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nTool: 'generate_image(prompt)'. Generates an image and returns a Markdown link.\n" +
-                                   "You MUST include the Markdown link in your final response.\n" +
-                                   "Format: ![Image Description](/uploads/FILENAME.png)\n" +
-                                   "Call this MULTIPLE times for multiple images.\n" +
-                                   "Format: {\"action\": \"generate_image\", \"action_input\": {\"prompt\": \"...\"}}";
+          systemInstructionText += "\n\nTool: 'generate_image(prompt, source_image)'. Generates an image.\n" +
+                                   "If the user wants to edit or refer to an existing image, provide its filename (e.g. gen-UUID.png) in 'source_image'.\n" +
+                                   "DO NOT hallucinate filenames. ONLY use filenames shown in previous messages.\n" +
+                                   "Call this tool to generate images. The system will handle displaying them.";
           
           tools.push({
             functionDeclarations: [{
               name: "generate_image",
-              description: "Generates a single image and returns its absolute path markdown. Use for all image requests.",
+              description: "Generates a single image. Optional source_image for edits.",
               parameters: {
                 type: "object",
                 properties: {
-                  prompt: { type: "string", description: "Detailed description of the image." }
+                  prompt: { type: "string", description: "Detailed description of the image." },
+                  source_image: { type: "string", description: "Optional: filename of an image to use as base context." }
                 },
                 required: ["prompt"]
               }
@@ -310,8 +308,7 @@ export class ChatService {
 
         for (const obj of foundObjects) {
             const data = obj.data;
-            const isImageTool = data.name === 'generate_image' || data.name === 'generate_images' || 
-                               data.action === 'generate_image' || data.action === 'generate_images' || 
+            const isImageTool = data.name === 'generate_image' || data.action === 'generate_image' || 
                                data.action === 'dalle.text2im' || data.action === 'image_gen' || data.action === 'text2im';
             const isMathTool = data.name === 'calculate' || data.action === 'calculate';
             
@@ -319,7 +316,7 @@ export class ChatService {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
                 if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = { prompt: args }; } }
                 const prompt = cleanPrompt(args);
-                toolCalls.push({ name: 'generate_image', args: { prompt, count: 1 } });
+                toolCalls.push({ name: 'generate_image', args: { ...args, prompt } });
                 jsonStringsToStrip.push(obj.raw);
             } else if (isMathTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
@@ -333,7 +330,7 @@ export class ChatService {
         for (const ftc of formalToolCalls) {
             if (ftc.name === 'generate_image') {
                 const prompt = cleanPrompt(ftc.args);
-                toolCalls.push({ name: 'generate_image', args: { prompt, count: 1 } });
+                toolCalls.push({ name: 'generate_image', args: { ...ftc.args, prompt } });
             } else if (ftc.name === 'calculate') {
                 toolCalls.push({ name: 'calculate', args: { expression: ftc.args.expression } });
             }
@@ -351,8 +348,15 @@ export class ChatService {
         if (toolCalls.length > 0) {
             for (const toolCall of toolCalls) {
                 if (toolCall.name === 'generate_image') {
-                    const { prompt: imgPrompt } = toolCall.args;
-                    const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, focusImages);
+                    const { prompt: imgPrompt, source_image } = toolCall.args;
+                    let activeContext = focusImages;
+                    
+                    if (source_image) {
+                        const specificImg = allHistoryImages.find(h => h.id === source_image);
+                        if (specificImg) activeContext = [specificImg.part];
+                    }
+
+                    const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, activeContext);
                     if (result && result.markdown) {
                         allAttachments.push(...(result.attachments || []));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + result.markdown;
