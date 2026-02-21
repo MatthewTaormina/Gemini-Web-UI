@@ -30,7 +30,7 @@ app.use('/uploads', express.static(uploadDir));
 
 app.get('/api/setup/status', async (req, res) => {
   try {
-    const result = await pool.query('SELECT COUNT(*) FROM users');
+    const result = await pool.query('SELECT COUNT(*) FROM users WHERE is_root = true');
     const count = parseInt(result.rows[0].count, 10);
     res.json({ initialized: count > 0 });
   } catch {
@@ -140,7 +140,7 @@ app.post('/api/setup/root', async (req, res) => {
   const { username, password } = req.body;
   
   try {
-    const checkUsers = await pool.query('SELECT COUNT(*) FROM users');
+    const checkUsers = await pool.query('SELECT COUNT(*) FROM users WHERE is_root = true');
     if (parseInt(checkUsers.rows[0].count, 10) > 0) {
       return res.status(400).json({ error: 'System already initialized' });
     }
