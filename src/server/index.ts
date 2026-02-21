@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import chatRouter from './apps/chat/ChatRouter.js';
 import storageRouter from './apps/storage/StorageRouter.js';
+import settingsRouter from './apps/settings/SettingsRouter.js';
 import { pool } from './db/pool.js';
 import { authenticateToken, hasPermission, getJwtSecret, AuthRequest, UserPayload } from './middleware/auth.js';
 
@@ -284,6 +285,9 @@ app.use('/storage', authenticateToken, (req, res, next) => {
     res.status(403).json({ error: 'Unauthorized' });
   }
 }, storageRouter);
+
+// Settings App Routes
+app.use('/api/settings', authenticateToken, settingsRouter);
 
 // Admin Role Management Endpoints
 app.get('/api/admin/roles', authenticateToken, async (req, res) => {
