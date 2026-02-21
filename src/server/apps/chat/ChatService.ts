@@ -130,6 +130,7 @@ export class ChatService {
         const modelName = convRes.rows[0].model || 'gemini-3.1-pro-preview';
         const isFirstMessage = parseInt(convRes.rows[0].msg_count) === 0;
 
+        // 1. Save user message
         const msgRes = await pool.query(
           "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
           [conversationId, 'user', message]
@@ -154,6 +155,7 @@ export class ChatService {
           } catch (e) { console.error(e); }
         }
 
+        // 2. Fetch history and build contents
         const historyRes = await pool.query(`
           SELECT m.*,
                  (SELECT COALESCE(json_agg(a.*), '[]') 
@@ -164,10 +166,10 @@ export class ChatService {
           ORDER BY m.created_at ASC
         `, [conversationId]);
 
-        const aliasRegistry: Record<string, { path: string, filename: string }> = {}; // IMG_1 -> metadata
+        const aliasRegistry: Record<string, { path: string, filename: string }> = {};
         let imgCounter = 1;
 
-        const contents = await Promise.all(historyRes.rows.map(async (row, idx) => {
+        const contents = await Promise.all(historyRes.rows.map(async (row) => {
           const parts: any[] = [];
           
           let contentText = row.content || "";
@@ -175,24 +177,18 @@ export class ChatService {
             if (att.file_type.startsWith('image/')) {
                 const alias = `IMG_${imgCounter++}`;
                 aliasRegistry[alias] = { path: att.file_path, filename: att.file_name };
-                // Inject the alias into the message text so the model knows what's what
-                contentText += `\n[This image is referenced as ${alias}]`;
+                // Ensure model knows about the alias
+                if (!contentText.includes(alias)) {
+                    contentText += `\n[Context: Image ${alias}]`;
+                }
+                
+                try {
+                  const fileBuffer = await fs.readFile(att.file_path);
+                  parts.push({ inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } });
+                } catch (e) {}
             }
           }
-          if (contentText) parts.push({ text: contentText });
-
-          // ONLY include actual image data for the current turn or very recent context
-          const isVeryRecent = idx >= historyRes.rows.length - 1;
-          if (isVeryRecent) {
-              for (const att of row.attachments) {
-                if (att.file_type.startsWith('image/')) {
-                    try {
-                      const fileBuffer = await fs.readFile(att.file_path);
-                      parts.push({ inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } });
-                    } catch (e) {}
-                }
-              }
-          }
+          if (contentText) parts.unshift({ text: contentText });
           if (parts.length === 0) parts.push({ text: "" });
           return { role: row.role === 'model' ? 'model' : 'user', parts };
         }));
@@ -201,15 +197,16 @@ export class ChatService {
             return this.handleDirectImageGeneration(conversationId, modelName, message, currentMessageAttachments);
         }
 
+        // 3. Define Tools
         const tools: any[] = [];
         let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
           systemInstructionText += "\n\nCRITICAL: To generate or edit images, you MUST use 'generate_image(prompt, source_image)'.\n" +
                                    "Images in history are labeled like 'IMG_1', 'IMG_2', etc.\n" +
-                                   "If you want to edit an image, pass its label (e.g. 'IMG_1') to 'source_image'.\n" +
-                                   "DO NOT write Markdown links. The system resolves your text and labels automatically.\n" +
-                                   "Call this tool once per image. Format: {\"action\": \"generate_image\", \"action_input\": {\"prompt\": \"...\", \"source_image\": \"IMG_1\"}}";
+                                   "If the user wants to edit or refer to an existing image, pass its label (e.g. 'IMG_1') to 'source_image'.\n" +
+                                   "DO NOT write Markdown links yourself. The system resolves your text and labels automatically.\n" +
+                                   "Call this tool once per image generated.";
           
           tools.push({
             functionDeclarations: [{
@@ -246,6 +243,7 @@ export class ChatService {
             });
         }
 
+        // 4. Generate response
         const result = await ai.models.generateContent({
             model: modelName,
             contents,
@@ -260,6 +258,7 @@ export class ChatService {
         const responseParts = result.candidates[0].content?.parts || [];
         const textPartsRaw = responseParts.filter((p: any) => p.text).map((p: any) => p.text).join("\n");
         
+        // 5. Parse tool calls
         const findJsonObjects = (text: string) => {
             const objects: { data: any, raw: string }[] = [];
             let start = -1;
@@ -340,6 +339,7 @@ export class ChatService {
             }
         }
 
+        // 6. Finalize output
         let cleanedText = textPartsRaw;
         for (const s of jsonStringsToStrip) cleanedText = cleanedText.replace(s, "");
         cleanedText = cleanedText.replace(/```json\s*```/g, "").replace(/```\s*```/g, "").trim();
@@ -371,17 +371,19 @@ export class ChatService {
                 } else if (toolCall.name === 'calculate') {
                     const { expression } = toolCall.args;
                     try {
+                        // eslint-disable-next-line no-eval
                         const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + `The result of ${expression} is **${evalResult}**.`;
                     } catch (e) {}
                 }
             }
 
-            // Final post-process: Replace any labels the model wrote in its text with Markdown (if applicable)
+            // Resolve any aliases the model used
             for (const [alias, meta] of Object.entries(aliasRegistry)) {
                 const md = `![Image](${this.getImageUrl(meta.filename)})`;
-                finalDisplayContent = finalDisplayContent.split(`[This image is referenced as ${alias}]`).join(md);
-                finalDisplayContent = finalDisplayContent.split(alias).join(md);
+                const regex = new RegExp("\\b" + alias + "\\b", "g");
+                finalDisplayContent = finalDisplayContent.replace(regex, md);
+                finalDisplayContent = finalDisplayContent.replace(`[Context: Image ${md}]`, "");
             }
 
             const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent]);
@@ -392,9 +394,11 @@ export class ChatService {
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
             return { response: finalDisplayContent, attachments: allAttachments, id: messageId };
         } else {
-            // Resolve aliases even if no tool was called (e.g. user asked "What is in IMG_1?")
             for (const [alias, meta] of Object.entries(aliasRegistry)) {
-                finalDisplayContent = finalDisplayContent.split(`[This image is referenced as ${alias}]`).join(`![Image](${this.getImageUrl(meta.filename)})`);
+                const md = `![Image](${this.getImageUrl(meta.filename)})`;
+                const regex = new RegExp("\\b" + alias + "\\b", "g");
+                finalDisplayContent = finalDisplayContent.replace(regex, md);
+                finalDisplayContent = finalDisplayContent.replace(`[Context: Image ${md}]`, "");
             }
             const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent || "No response received."]);
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
