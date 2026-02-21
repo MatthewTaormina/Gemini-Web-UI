@@ -1,9 +1,13 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import { chatService } from './ChatService.js';
 import multer from 'multer';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
+
+interface AuthRequest extends Request {
+  user?: any;
+}
 
 const router = Router();
 
@@ -24,7 +28,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-router.get('/conversations', async (req: any, res) => {
+router.get('/conversations', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user.id;
     const conversations = await chatService.getConversations(userId);
@@ -35,7 +39,7 @@ router.get('/conversations', async (req: any, res) => {
   }
 });
 
-router.post('/conversations', async (req: any, res) => {
+router.post('/conversations', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user.id;
     const { title, model } = req.body;
@@ -47,7 +51,7 @@ router.post('/conversations', async (req: any, res) => {
   }
 });
 
-router.get('/conversations/:id/messages', async (req: any, res) => {
+router.get('/conversations/:id/messages', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user.id;
     const messages = await chatService.getMessages(req.params.id, userId);
@@ -58,10 +62,14 @@ router.get('/conversations/:id/messages', async (req: any, res) => {
   }
 });
 
-router.post('/conversations/:id/messages', upload.array('files'), async (req: any, res) => {
+router.post('/conversations/:id/messages', upload.array('files'), async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user.id;
-    const { content } = req.body;
+    const { content, tools } = req.body;
+    const enabledTools = Array.isArray(tools) ? tools : (tools ? [tools] : []);
+    
+    console.log(`[ChatRouter] Received message for conv ${req.params.id}. Tools:`, enabledTools);
+
     const files = (req.files as Express.Multer.File[] || []).map(f => ({
       filename: f.filename,
       path: f.path,
@@ -69,7 +77,7 @@ router.post('/conversations/:id/messages', upload.array('files'), async (req: an
       size: f.size
     }));
 
-    const result = await chatService.sendMessage(req.params.id, userId, content, files);
+    const result = await chatService.sendMessage(req.params.id, userId, content, files, enabledTools);
     res.json(result);
   } catch (err: any) {
     console.error(`Error in chat route:`, err);
@@ -77,11 +85,23 @@ router.post('/conversations/:id/messages', upload.array('files'), async (req: an
   }
 });
 
-router.delete('/conversations/:id', async (req: any, res) => {
+router.delete('/conversations/:id', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user.id;
     await chatService.deleteConversation(req.params.id, userId);
     res.status(204).send();
+  } catch (err: any) {
+    console.error(`Error in chat route:`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/conversations/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user.id;
+    const { model, title } = req.body;
+    const conversation = await chatService.updateConversation(req.params.id, userId, { model, title });
+    res.json(conversation);
   } catch (err: any) {
     console.error(`Error in chat route:`, err);
     res.status(500).json({ error: err.message });
