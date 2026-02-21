@@ -416,39 +416,45 @@ export class ChatService {
     const generatedAttachments: any[] = [];
     const safeCount = Math.min(Math.max(1, count), 4);
     
-    console.log(`[ChatService] Handoff to ${imageModelId} with ${lastImageContext.length} context images`);
+    console.log(`[ChatService] Handoff to ${imageModelId}: Sending ${safeCount} independent requests`);
 
-    try {
-        const result = await ai.models.generateContent({
-            model: imageModelId,
-            contents: [{ 
-                role: 'user', 
-                parts: [
-                    ...lastImageContext, 
-                    { text: lastImageContext.length > 0 
-                        ? `This is the last relevant image. Modify or edit it based on this request: ${prompt}. Output exactly ${safeCount} variation(s).` 
-                        : `Generate ${safeCount} variation(s) of: ${prompt}` } 
-                ] 
-            }]
-        });
-        
-        const parts = result.candidates?.[0]?.content?.parts || [];
-        for (const part of parts) {
-            if (part.inlineData) {
+    const generateSingleImage = async (index: number) => {
+        try {
+            const result = await ai.models.generateContent({
+                model: imageModelId,
+                contents: [{ 
+                    role: 'user', 
+                    parts: [
+                        ...lastImageContext, 
+                        { text: lastImageContext.length > 0 
+                            ? `Edit/Modify the provided image based on this request: ${prompt}. This is variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
+                            : `Generate a single, distinct image based on: ${prompt}. This is variation ${index + 1} of ${safeCount}.` } 
+                    ] 
+                }]
+            });
+            
+            const parts = result.candidates?.[0]?.content?.parts || [];
+            const imageParts = parts.filter((p: any) => p.inlineData);
+            
+            for (const part of imageParts) {
                 const buffer = Buffer.from(part.inlineData.data, 'base64');
                 const filename = `gen-${uuidv4()}.png`;
                 const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
                 const filePath = path.join(uploadDir, filename);
                 await fs.writeFile(filePath, buffer);
-                generatedAttachments.push({ file_name: filename, file_path: filePath, file_type: part.inlineData.mimeType, file_size: buffer.length });
+                return { file_name: filename, file_path: filePath, file_type: part.inlineData.mimeType, file_size: buffer.length };
             }
+        } catch (err) {
+            console.error(`[ChatService] Individual image generation failed (index ${index}):`, err.message);
         }
-    } catch (err) {
-        console.error(`[ChatService] Batch handoff failed:`, err.message);
-    }
+        return null;
+    };
+
+    const results = await Promise.all(Array.from({ length: safeCount }).map((_, i) => generateSingleImage(i)));
+    for (const r of results) { if (r) generatedAttachments.push(r); }
 
     const responseText = generatedAttachments.length > 0 
-        ? `Generated ${generatedAttachments.length} images for: ${prompt}` 
+        ? `Generated ${generatedAttachments.length} distinct image(s) for: ${prompt}` 
         : "Image generation failed.";
 
     const res = await pool.query(
@@ -477,34 +483,47 @@ export class ChatService {
         const requestedCount = countMatch ? parseInt(countMatch[1]) : 1;
         const safeCount = Math.min(Math.max(1, requestedCount), 4);
 
-        const result = await ai.models.generateContent({
-            model: modelId,
-            contents: [{ 
-                role: 'user', 
-                parts: [
-                    ...lastImageContext, 
-                    { text: lastImageContext.length > 0 
-                        ? `This is the last relevant image. Modify or edit it based on this request: ${prompt}. Generate ${safeCount} variation(s).` 
-                        : `Generate ${safeCount} variation(s) of: ${prompt}` }
-                ] 
-            }]
-        });
-        
-        const parts = result.candidates?.[0]?.content?.parts || [];
-        for (const part of parts) {
-            if (part.inlineData) {
-                const buffer = Buffer.from(part.inlineData.data, 'base64');
-                const filename = `gen-${uuidv4()}.png`;
-                const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
-                const filePath = path.join(uploadDir, filename);
-                await fs.writeFile(filePath, buffer);
-                generatedAttachments.push({ file_name: filename, file_path: filePath, file_type: part.inlineData.mimeType, file_size: buffer.length });
+        console.log(`[ChatService] Direct image generation with ${modelId}: Sending ${safeCount} independent requests`);
+
+        const generateSingleImage = async (index: number) => {
+            try {
+                const result = await ai.models.generateContent({
+                    model: modelId,
+                    contents: [{ 
+                        role: 'user', 
+                        parts: [
+                            ...lastImageContext, 
+                            { text: lastImageContext.length > 0 
+                                ? `Edit/Modify the provided image based on this request: ${prompt}. Variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
+                                : `Generate a single, distinct image based on: ${prompt}. Variation ${index + 1} of ${safeCount}.` }
+                        ] 
+                    }]
+                });
+                
+                const parts = result.candidates?.[0]?.content?.parts || [];
+                const imageParts = parts.filter((p: any) => p.inlineData);
+
+                for (const part of imageParts) {
+                    const buffer = Buffer.from(part.inlineData.data, 'base64');
+                    const filename = `gen-${uuidv4()}.png`;
+                    const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
+                    const filePath = path.join(uploadDir, filename);
+                    await fs.writeFile(filePath, buffer);
+                    return { file_name: filename, file_path: filePath, file_type: part.inlineData.mimeType, file_size: buffer.length };
+                }
+            } catch (err) {
+                console.error(`[ChatService] Individual direct image generation failed (index ${index}):`, err.message);
             }
-        }
-    } catch (err) { console.error(`[ChatService] Direct image failed:`, err.message); }
+            return null;
+        };
+
+        const results = await Promise.all(Array.from({ length: safeCount }).map((_, i) => generateSingleImage(i)));
+        for (const r of results) { if (r) generatedAttachments.push(r); }
+
+    } catch (err) { console.error(`[ChatService] Direct image batch failed:`, err.message); }
 
     const responseText = generatedAttachments.length > 0 
-        ? `Generated ${generatedAttachments.length} image(s) for: ${prompt}` 
+        ? `Generated ${generatedAttachments.length} distinct image(s) for: ${prompt}` 
         : "Image generation failed. Ensure your prompt is descriptive.";
 
     const res = await pool.query(
