@@ -7,6 +7,7 @@ import Setup from './components/Setup.js';
 import UserManagement from './components/UserManagement.js';
 import RoleManagement from './components/RoleManagement.js';
 import PermissionManagement from './components/PermissionManagement.js';
+import SettingsManagement from './components/SettingsManagement.js';
 import ChatApp from './apps/chat/ChatApp.js';
 import { MainLayout, DashboardLayout } from './components/Layouts.js';
 import './App.css';
@@ -140,7 +141,7 @@ function App() {
               <Route path="users" element={<UserManagement token={token} checkPermission={checkPermission} _isRoot={isRoot} />} />
               <Route path="roles" element={<RoleManagement token={token} checkPermission={checkPermission} _isRoot={isRoot} />} />
               <Route path="permissions" element={<PermissionManagement token={token} checkPermission={checkPermission} _isRoot={isRoot} />} />
-              <Route path="settings" element={<div><h1>System Settings</h1><p>Configure global parameters.</p></div>} />
+              <Route path="settings" element={<SettingsManagement token={token} checkPermission={checkPermission} _isRoot={isRoot} />} />
             </Route>
           )}
 

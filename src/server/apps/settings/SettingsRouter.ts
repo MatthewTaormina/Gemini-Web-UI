@@ -95,4 +95,31 @@ router.post('/system', authenticateToken, requirePermission('update', 'settings'
     }
 });
 
+/**
+ * GET /api/settings/all
+ * Lists all settings in the database. Requires read:settings permission.
+ */
+router.get('/all', authenticateToken, requirePermission('read', 'settings'), async (req, res) => {
+    try {
+        const settings = await settingsService.getSettingsByPrefix('global');
+        res.json(settings);
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * DELETE /api/settings/path/:path
+ * Deletes the setting at the specific ltree path. Requires manage:settings permission.
+ */
+router.delete('/path/:path', authenticateToken, requirePermission('manage', 'settings'), async (req, res) => {
+    try {
+        const path = req.params.path;
+        await settingsService.deleteSetting(path);
+        res.json({ success: true });
+    } catch (error: any) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 export default router;
