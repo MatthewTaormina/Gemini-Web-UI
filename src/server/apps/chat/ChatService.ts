@@ -130,7 +130,7 @@ export class ChatService {
         const modelName = convRes.rows[0].model || 'gemini-3.1-pro-preview';
         const isFirstMessage = parseInt(convRes.rows[0].msg_count) === 0;
 
-        console.log(`[ChatService] sendMessage: convId=${conversationId}, model=${modelName}, tools=${enabledTools}`);
+        console.log(`[ChatService] sendMessage: convId=${conversationId}, model=${modelName}`);
 
         // 1. Save user message
         const msgRes = await pool.query(
@@ -173,7 +173,9 @@ export class ChatService {
 
         const contents = await Promise.all(historyRes.rows.map(async (row) => {
           const parts: any[] = [];
-          let contentText = row.content || "";
+          
+          // IMPORTANT: Strip system-generated Markdown links from history so model doesn't hallucinate them
+          let contentText = (row.content || "").replace(/!\[.*?\]\(\/uploads\/.*?\)/g, "").trim();
           
           for (const att of row.attachments) {
             if (att.file_type.startsWith('image/')) {
@@ -185,15 +187,13 @@ export class ChatService {
                 try {
                   const fileBuffer = await fs.readFile(att.file_path);
                   parts.push({ inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } });
-                } catch (e) { console.warn(`[ChatService] Could not find file for alias ${alias}: ${att.file_path}`); }
+                } catch (e) { console.warn(`[ChatService] Context file error: ${att.file_path}`); }
             }
           }
           if (contentText) parts.unshift({ text: contentText });
           if (parts.length === 0) parts.push({ text: "" });
           return { role: row.role === 'model' ? 'model' : 'user', parts };
         }));
-
-        console.log(`[ChatService] Built context with ${Object.keys(aliasRegistry).length} images in registry.`);
 
         if (modelName.includes('-image')) {
             return this.handleDirectImageGeneration(conversationId, modelName, message, currentMessageAttachments);
@@ -204,16 +204,16 @@ export class ChatService {
         let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nCRITICAL: To generate or edit images, you MUST use 'generate_image(prompt, source_image)'.\n" +
-                                   "Images in history are labeled like 'IMG_1', 'IMG_2', etc.\n" +
-                                   "If the user wants to edit or refer to an existing image, pass its label (e.g. 'IMG_1') to 'source_image'.\n" +
-                                   "DO NOT write Markdown links yourself. The system resolves your text and labels automatically.\n" +
-                                   "Call this tool once per image generated.";
+          systemInstructionText += "\n\nCRITICAL: To create or modify images, you MUST call 'generate_image(prompt, source_image)'.\n" +
+                                   "Images in the chat are labeled 'IMG_1', 'IMG_2', etc.\n" +
+                                   "To refer to an image, use its label in 'source_image'.\n" +
+                                   "NEVER write URLs like '/uploads/...' or Markdown images yourself. You DO NOT have file system access.\n" +
+                                   "Output ONLY the tool call when generating. The system will embed the result for the user.";
           
           tools.push({
             functionDeclarations: [{
               name: "generate_image",
-              description: "Generates a single image. Use 'source_image' label (e.g. IMG_1) for edits.",
+              description: "Generates a single image. Use label (e.g. IMG_1) in source_image for contextual edits.",
               parameters: {
                 type: "object",
                 properties: {
@@ -227,7 +227,7 @@ export class ChatService {
         }
 
         if (enabledTools.includes('math')) {
-            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for math calculations.\n" +
+            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for math.\n" +
                                      "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"...\"}}";
             
             tools.push({
@@ -259,7 +259,7 @@ export class ChatService {
 
         const responseParts = result.candidates[0].content?.parts || [];
         const textPartsRaw = responseParts.filter((p: any) => p.text).map((p: any) => p.text).join("\n");
-        console.log(`[ChatService] Raw model text output: "${textPartsRaw.substring(0, 100)}..."`);
+        console.log(`[ChatService] Raw Output: "${textPartsRaw.substring(0, 50)}..."`);
         
         // 5. Parse tool calls
         const findJsonObjects = (text: string) => {
@@ -334,7 +334,6 @@ export class ChatService {
 
         const formalToolCalls = responseParts.filter((p: any) => p.functionCall).map((p: any) => p.functionCall);
         for (const ftc of formalToolCalls) {
-            console.log(`[ChatService] Formal function call: ${ftc.name}`, ftc.args);
             if (ftc.name === 'generate_image') {
                 const prompt = cleanPrompt(ftc.args);
                 toolCalls.push({ name: 'generate_image', args: { ...ftc.args, prompt } });
@@ -352,7 +351,6 @@ export class ChatService {
         let finalDisplayContent = cleanedText;
 
         if (toolCalls.length > 0) {
-            console.log(`[ChatService] Executing ${toolCalls.length} tool calls.`);
             for (const toolCall of toolCalls) {
                 if (toolCall.name === 'generate_image') {
                     const { prompt: imgPrompt, source_image } = toolCall.args;
@@ -362,60 +360,57 @@ export class ChatService {
                         try {
                             const buffer = await fs.readFile(aliasRegistry[source_image].path);
                             activeContext = [{ inlineData: { data: buffer.toString('base64'), mimeType: 'image/png' } }];
-                            console.log(`[ChatService] Using specific source_image alias ${source_image}`);
-                        } catch (e) { console.error(`[ChatService] Failed to load source_image ${source_image}:`, e); }
+                        } catch (e) {}
                     }
                     if (activeContext.length === 0) {
                         activeContext = currentMessageAttachments.length > 0 ? currentMessageAttachments : (Object.values(aliasRegistry).length > 0 ? [{ inlineData: { data: (await fs.readFile(Object.values(aliasRegistry).pop()!.path)).toString('base64'), mimeType: 'image/png' } }] : []);
-                        console.log(`[ChatService] Falling back to default context (${activeContext.length} images)`);
                     }
 
                     const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, activeContext);
                     if (result && result.markdown) {
                         allAttachments.push(...(result.attachments || []));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + result.markdown;
-                        console.log(`[ChatService] Generation success: ${result.markdown}`);
-                    } else {
-                        console.error(`[ChatService] Generation failed for prompt: "${imgPrompt}"`);
                     }
                 } else if (toolCall.name === 'calculate') {
                     const { expression } = toolCall.args;
                     try {
                         const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + `The result of ${expression} is **${evalResult}**.`;
-                    } catch (e) { console.error(`[ChatService] Math failed: ${expression}`, e); }
+                    } catch (e) {}
                 }
             }
 
-            // Resolve any aliases the model used
+            // Resolve any aliases and strip system labels
             for (const [alias, meta] of Object.entries(aliasRegistry)) {
                 const md = `![Image](${this.getImageUrl(meta.filename)})`;
                 const regex = new RegExp("\\b" + alias + "\\b", "g");
                 finalDisplayContent = finalDisplayContent.replace(regex, md);
-                finalDisplayContent = finalDisplayContent.replace(`[Context: Image ${md}]`, "");
+                // Aggressive strip of context markers
+                finalDisplayContent = finalDisplayContent.split(`[Context: Image ${alias}]`).join("");
+                finalDisplayContent = finalDisplayContent.split(`[Context: Image ${md}]`).join("");
             }
 
-            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent]);
+            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent.trim()]);
             const messageId = res.rows[0].id;
             for (const att of allAttachments) {
                 await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
             }
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: finalDisplayContent, attachments: allAttachments, id: messageId };
+            return { response: finalDisplayContent.trim(), attachments: allAttachments, id: messageId };
         } else {
-            console.log(`[ChatService] No tools called. Resolving labels only.`);
             for (const [alias, meta] of Object.entries(aliasRegistry)) {
                 const md = `![Image](${this.getImageUrl(meta.filename)})`;
                 const regex = new RegExp("\\b" + alias + "\\b", "g");
                 finalDisplayContent = finalDisplayContent.replace(regex, md);
-                finalDisplayContent = finalDisplayContent.replace(`[Context: Image ${md}]`, "");
+                finalDisplayContent = finalDisplayContent.split(`[Context: Image ${alias}]`).join("");
+                finalDisplayContent = finalDisplayContent.split(`[Context: Image ${md}]`).join("");
             }
-            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent || "No response received."]);
+            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent.trim() || "No response received."]);
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: finalDisplayContent || "No response received.", attachments: [], id: res.rows[0].id };
+            return { response: finalDisplayContent.trim() || "No response received.", attachments: [], id: res.rows[0].id };
         }
     } catch (error) {
-        console.error("[ChatService] FATAL Error in sendMessage:", error);
+        console.error("[ChatService] FATAL Error:", error);
         throw error;
     }
   }
@@ -427,8 +422,6 @@ export class ChatService {
         const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
             try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
         }).trim();
-
-        console.log(`[ChatService] Handoff to ${imageModelId}. Prompt: "${internalCleanedPrompt}", Context: ${lastImageContext.length} images`);
 
         const result = await ai.models.generateContent({
             model: imageModelId,
@@ -443,7 +436,6 @@ export class ChatService {
         
         const imagePart = result.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
         if (imagePart) {
-            console.log(`[ChatService] Handoff success. Image data size: ${imagePart.inlineData.data.length}`);
             const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
             const filename = `gen-${uuidv4()}.png`;
             const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
@@ -453,8 +445,6 @@ export class ChatService {
             const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
             const markdown = `![Generated Image](${this.getImageUrl(filename)})`;
             return { attachments: [att], markdown };
-        } else {
-            console.warn(`[ChatService] Handoff returned no image part.`);
         }
     } catch (err) { console.error(`[ChatService] Handoff failed:`, err.message); }
     return null;
@@ -466,8 +456,6 @@ export class ChatService {
         const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
             try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
         }).trim();
-
-        console.log(`[ChatService] Direct Generation with ${modelId}. Prompt: "${internalCleanedPrompt}", Context: ${lastImageContext.length} images`);
 
         const result = await ai.models.generateContent({
             model: modelId,
@@ -482,7 +470,6 @@ export class ChatService {
         
         const imagePart = result.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
         if (imagePart) {
-            console.log(`[ChatService] Direct success. Image data size: ${imagePart.inlineData.data.length}`);
             const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
             const filename = `gen-${uuidv4()}.png`;
             const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
@@ -495,8 +482,6 @@ export class ChatService {
             const messageId = res.rows[0].id;
             await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
             return { response: markdown, attachments: [att], id: messageId };
-        } else {
-            console.warn(`[ChatService] Direct returned no image part.`);
         }
     } catch (err) { console.error(`[ChatService] Direct failed:`, err.message); }
     const failMsg = "Image generation failed.";
