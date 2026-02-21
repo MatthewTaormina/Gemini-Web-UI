@@ -456,7 +456,7 @@ export class ChatService {
             const markdown = `![Generated Image](${this.getImageUrl(filename)})`;
             return { attachments: [att], markdown };
         }
-    } catch (err) { console.error(`[ChatService] Handoff failed:`, err.message); }
+    } catch (err: any) { console.error(`[ChatService] Handoff failed:`, err.message); }
     return null;
   }
 
@@ -499,7 +499,7 @@ export class ChatService {
             );
             return { response: markdown, attachments: [att], id: modelMessageId };
         }
-    } catch (err) { console.error(`[ChatService] Direct failed:`, err.message); }
+    } catch (err: any) { console.error(`[ChatService] Direct failed:`, err.message); }
     const failMsg = "Image generation failed.";
     const failRes = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', failMsg]);
     return { response: failMsg, attachments: [], id: failRes.rows[0].id };

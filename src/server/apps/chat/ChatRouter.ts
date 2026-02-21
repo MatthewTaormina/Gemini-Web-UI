@@ -54,7 +54,7 @@ router.post('/conversations', async (req: AuthRequest, res: Response) => {
 router.get('/conversations/:id/messages', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user.id;
-    const messages = await chatService.getMessages(req.params.id, userId);
+    const messages = await chatService.getMessages(req.params.id as string, userId);
     res.json(messages);
   } catch (err: any) {
     console.error(`Error in chat route:`, err);
@@ -77,12 +77,7 @@ router.post('/conversations/:id/messages', upload.array('files'), async (req: Au
       size: f.size
     }));
 
-    // Calculate absolute origin for markdown links
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-    const host = req.headers['x-forwarded-host'] || req.get('host');
-    const origin = `${protocol}://${host}`;
-
-    const result = await chatService.sendMessage(req.params.id, userId, content, files, enabledTools, origin);
+    const result = await chatService.sendMessage(req.params.id as string, userId, content, files, enabledTools);
     res.json(result);
   } catch (err: any) {
     console.error(`Error in chat route:`, err);
@@ -93,7 +88,7 @@ router.post('/conversations/:id/messages', upload.array('files'), async (req: Au
 router.delete('/conversations/:id', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user.id;
-    await chatService.deleteConversation(req.params.id, userId);
+    await chatService.deleteConversation(req.params.id as string, userId);
     res.status(204).send();
   } catch (err: any) {
     console.error(`Error in chat route:`, err);
@@ -105,7 +100,7 @@ router.patch('/conversations/:id', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user.id;
     const { model, title } = req.body;
-    const conversation = await chatService.updateConversation(req.params.id, userId, { model, title });
+    const conversation = await chatService.updateConversation(req.params.id as string, userId, { model, title });
     res.json(conversation);
   } catch (err: any) {
     console.error(`Error in chat route:`, err);

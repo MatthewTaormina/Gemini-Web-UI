@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS users (
     meta JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- Ensure is_system column exists
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT false;
+
 -- Roles table
 CREATE TABLE IF NOT EXISTS roles (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -58,8 +61,8 @@ CREATE TABLE IF NOT EXISTS user_roles (
 );
 
 -- Ensure only one root and system user exists
-CREATE UNIQUE INDEX singleton_root_user ON users (is_root) WHERE is_root = true;
-CREATE UNIQUE INDEX singleton_system_user ON users (is_system) WHERE is_system = true;
+CREATE UNIQUE INDEX IF NOT EXISTS singleton_root_user ON users (is_root) WHERE is_root = true;
+CREATE UNIQUE INDEX IF NOT EXISTS singleton_system_user ON users (is_system) WHERE is_system = true;
 
 -- Prevent deletion of root and system user
 CREATE OR REPLACE FUNCTION protect_reserved_users()
@@ -72,6 +75,7 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+DROP TRIGGER IF EXISTS trg_protect_reserved_users ON users;
 CREATE TRIGGER trg_protect_reserved_users
     BEFORE DELETE OR UPDATE OF deleted_at ON users
     FOR EACH ROW
@@ -131,6 +135,7 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
 CREATE TRIGGER update_users_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW
@@ -187,6 +192,7 @@ CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_message_id ON attachments(message_id);
 
 -- Trigger for conversations updated_at
+DROP TRIGGER IF EXISTS update_conversations_updated_at ON conversations;
 CREATE TRIGGER update_conversations_updated_at
     BEFORE UPDATE ON conversations
     FOR EACH ROW

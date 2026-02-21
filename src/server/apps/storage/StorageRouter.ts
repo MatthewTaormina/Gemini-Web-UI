@@ -22,7 +22,7 @@ router.get('/volumes', async (req: AuthRequest, res: Response) => {
 // Get single volume
 router.get('/volumes/:id', async (req: AuthRequest, res: Response) => {
     try {
-        const volume = await storageVolumeService.getVolumeById(req.params.id);
+        const volume = await storageVolumeService.getVolumeById(req.params.id as string);
         if (!volume) return res.status(404).json({ error: 'Volume not found' });
         res.json(volume);
     } catch (error: any) {
@@ -43,7 +43,7 @@ router.post('/volumes', async (req: AuthRequest, res: Response) => {
 // Update volume
 router.put('/volumes/:id', async (req: AuthRequest, res: Response) => {
     try {
-        const volume = await storageVolumeService.updateVolume(req.params.id, req.body);
+        const volume = await storageVolumeService.updateVolume(req.params.id as string, req.body);
         res.json(volume);
     } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -53,7 +53,7 @@ router.put('/volumes/:id', async (req: AuthRequest, res: Response) => {
 // Delete volume
 router.delete('/volumes/:id', async (req: AuthRequest, res: Response) => {
     try {
-        await storageVolumeService.deleteVolume(req.params.id);
+        await storageVolumeService.deleteVolume(req.params.id as string);
         res.json({ success: true });
     } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -112,7 +112,7 @@ router.post('/upload', upload.single('file'), async (req: AuthRequest, res: Resp
 // File Download/Stream
 router.get('/file/:id', async (req: AuthRequest, res: Response) => {
     try {
-        const fileId = req.params.id;
+        const fileId = req.params.id as string;
         
         // Strategy: Hybrid Presign/Stream
         // First try to get a direct URL (like S3 presigned)

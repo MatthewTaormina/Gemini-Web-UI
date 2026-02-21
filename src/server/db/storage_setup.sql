@@ -126,11 +126,13 @@ CREATE INDEX IF NOT EXISTS idx_files_app_id ON files(app_id);
 CREATE INDEX IF NOT EXISTS idx_files_namespace ON files(namespace);
 
 -- Updated_at triggers for storage tables
+DROP TRIGGER IF EXISTS update_storage_volumes_updated_at ON storage_volumes;
 CREATE TRIGGER update_storage_volumes_updated_at
     BEFORE UPDATE ON storage_volumes
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_files_updated_at ON files;
 CREATE TRIGGER update_files_updated_at
     BEFORE UPDATE ON files
     FOR EACH ROW

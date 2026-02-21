@@ -16,14 +16,18 @@ const pool = new pg.Pool({
 async function setupDatabase() {
   try {
     const sqlPath = path.join(__dirname, 'setup.sql');
+    const storageSqlPath = path.join(__dirname, 'storage_setup.sql');
     const sql = fs.readFileSync(sqlPath, 'utf8');
+    const storageSql = fs.readFileSync(storageSqlPath, 'utf8');
 
     console.log('Connecting to database...');
     const client = await pool.connect();
     
     try {
-      console.log('Executing setup script...');
+      console.log('Executing main setup script...');
       await client.query(sql);
+      console.log('Executing storage setup script...');
+      await client.query(storageSql);
       console.log('Database setup completed successfully.');
     } finally {
       client.release();
