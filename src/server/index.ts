@@ -276,7 +276,7 @@ app.use('/api/chat', authenticateToken, (req, res, next) => {
 }, chatRouter);
 
 // Storage App Routes
-app.use('/api/storage', authenticateToken, (req, res, next) => {
+app.use('/storage', authenticateToken, (req, res, next) => {
   const user = (req as AuthRequest).user as UserPayload;
   if (hasPermission(user, 'read', 'storage') || hasPermission(user, 'upload', 'storage') || hasPermission(user, 'manage', 'storage')) {
     next();

@@ -173,7 +173,7 @@ export class StorageService {
         }
 
         // Fallback to local server proxy URL
-        return `/api/storage/file/${file.id}`;
+        return `/storage/file/${file.id}`;
     }
 
     async deleteFile(fileId: string): Promise<void> {
