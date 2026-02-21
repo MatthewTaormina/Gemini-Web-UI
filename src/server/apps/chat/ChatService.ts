@@ -183,7 +183,6 @@ export class ChatService {
           return { role: row.role === 'model' ? 'model' : 'user', parts };
         }));
 
-        // Focus on NEW attachments if any, otherwise the absolute last image from history
         let focusImages: any[] = [];
         if (currentMessageAttachments.length > 0) {
             focusImages = currentMessageAttachments;
@@ -192,7 +191,6 @@ export class ChatService {
             if (lastHistorical) focusImages = [lastHistorical];
         }
 
-        // If it's a direct image model, skip orchestration
         if (modelName.includes('-image')) {
             return this.handleDirectImageGeneration(conversationId, modelName, message, focusImages);
         }
@@ -201,14 +199,15 @@ export class ChatService {
         let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nTool: 'generate_image(prompt)'. Use it to create images.\n" +
+          systemInstructionText += "\n\nTool: 'generate_image(prompt)'. Generates an image and returns a Markdown link.\n" +
+                                   "You MUST include the returned Markdown link in your final response to display the image to the user.\n" +
                                    "If you need multiple images, call this tool MULTIPLE times in one turn.\n" +
                                    "Format: {\"action\": \"generate_image\", \"action_input\": {\"prompt\": \"...\"}}";
           
           tools.push({
             functionDeclarations: [{
               name: "generate_image",
-              description: "Generates a single, distinct image. Call multiple times for multiple images.",
+              description: "Generates a single image and returns its markdown link. Use this for all image requests.",
               parameters: {
                 type: "object",
                 properties: {
@@ -221,7 +220,7 @@ export class ChatService {
         }
 
         if (enabledTools.includes('math')) {
-            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use it for math.\n" +
+            systemInstructionText += "\n\nTool: 'calculate(expression)'. Evaluates math expressions.\n" +
                                      "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"...\"}}";
             
             tools.push({
@@ -343,53 +342,53 @@ export class ChatService {
         }
         cleanedText = cleanedText.replace(/```json\s*```/g, "").replace(/```\s*```/g, "").trim();
 
-        let finalResponseText = cleanedText;
         const allAttachments: any[] = [];
-        let lastMsgId = null;
+        let finalDisplayContent = cleanedText;
 
         if (toolCalls.length > 0) {
-            if (cleanedText) {
+            for (const toolCall of toolCalls) {
+                if (toolCall.name === 'generate_image') {
+                    const { prompt: imgPrompt } = toolCall.args;
+                    const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, focusImages);
+                    allAttachments.push(...(result.attachments || []));
+                    // Append markdown link to the response content
+                    if (result.markdown) {
+                        finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + result.markdown;
+                    }
+                } else if (toolCall.name === 'calculate') {
+                    const { expression } = toolCall.args;
+                    try {
+                        const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
+                        finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + `The result of ${expression} is **${evalResult}**.`;
+                    } catch (e) {
+                        finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + `Failed to calculate ${expression}.`;
+                    }
+                }
+            }
+
+            const res = await pool.query(
+                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
+                [conversationId, 'model', finalDisplayContent]
+            );
+            const messageId = res.rows[0].id;
+
+            for (const att of allAttachments) {
                 await pool.query(
-                    "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
-                    [conversationId, 'model', cleanedText]
+                  "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
+                  [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
                 );
             }
 
-            for (const toolCall of toolCalls) {
-                if (toolCall.name === 'generate_image') {
-                    const { prompt: imgPrompt, count = 1 } = toolCall.args;
-                    const finalizedPrompt = cleanPrompt(imgPrompt);
-                    const result = await this.performImageModelHandoff(conversationId, finalizedPrompt, count, focusImages);
-                    allAttachments.push(...(result.attachments || []));
-                    finalResponseText += (finalResponseText ? "\n\n" : "") + result.response;
-                    lastMsgId = result.id;
-                } else if (toolCall.name === 'calculate') {
-                    const { expression } = toolCall.args;
-                    let resultText = "";
-                    try {
-                        // eslint-disable-next-line no-eval
-                        const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
-                        resultText = `The result of ${expression} is ${evalResult}.`;
-                    } catch (e) {
-                        resultText = `Failed to calculate ${expression}.`;
-                    }
-                    const res = await pool.query(
-                        "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
-                        [conversationId, 'model', resultText]
-                    );
-                    finalResponseText += (finalResponseText ? "\n\n" : "") + resultText;
-                    lastMsgId = res.rows[0].id;
-                }
-            }
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: finalResponseText, attachments: allAttachments, id: lastMsgId };
+            return { response: finalDisplayContent, attachments: allAttachments, id: messageId };
         } else {
+            const finalResp = finalDisplayContent || "No response received.";
             const res = await pool.query(
                 "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
-                [conversationId, 'model', finalResponseText || "No response received."]
+                [conversationId, 'model', finalResp]
             );
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: finalResponseText || "No response received.", attachments: [], id: res.rows[0].id };
+            return { response: finalResp, attachments: [], id: res.rows[0].id };
         }
     } catch (error) {
         console.error("[ChatService] FATAL Error in sendMessage:", error);
@@ -401,15 +400,17 @@ export class ChatService {
     const ai = await this.getAI();
     const imageModelId = 'gemini-2.5-flash-image';
     const generatedAttachments: any[] = [];
-    const safeCount = Math.min(Math.max(1, count), 4);
+    let markdownLinks = "";
     
-    console.log(`[ChatService] Handoff to ${imageModelId}: Sending ${safeCount} independent requests`);
+    console.log(`[ChatService] performImageModelHandoff: prompt="${prompt}", contextCount=${lastImageContext.length}`);
 
     const generateSingleImage = async (index: number) => {
         try {
             const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
                 try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
             }).trim();
+
+            console.log(`[ChatService] Calling ${imageModelId} with prompt: "${internalCleanedPrompt}"`);
 
             const result = await ai.models.generateContent({
                 model: imageModelId,
@@ -418,111 +419,96 @@ export class ChatService {
                     parts: [
                         ...lastImageContext, 
                         { text: lastImageContext.length > 0 
-                            ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. Variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
-                            : `Generate a single, distinct image based on: ${internalCleanedPrompt}. Variation ${index + 1} of ${safeCount}.` } 
+                            ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. Ensure it is a single, distinct image.` 
+                            : `Generate a single, distinct image based on: ${internalCleanedPrompt}.` } 
                     ] 
                 }]
             });
             
+            console.log(`[ChatService] AI Response received. Candidates: ${result.candidates?.length}`);
+
             const parts = result.candidates?.[0]?.content?.parts || [];
-            const imageParts = parts.filter((p: any) => p.inlineData);
+            const imagePart = parts.find((p: any) => p.inlineData);
             
-            for (const part of imageParts) {
-                const buffer = Buffer.from(part.inlineData.data, 'base64');
+            if (imagePart) {
+                console.log(`[ChatService] Image part found! Size: ${imagePart.inlineData.data.length} bytes`);
+                const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
                 const filename = `gen-${uuidv4()}.png`;
                 const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
                 const filePath = path.join(uploadDir, filename);
                 await fs.writeFile(filePath, buffer);
-                return { file_name: filename, file_path: filePath, file_type: part.inlineData.mimeType, file_size: buffer.length };
+                
+                const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
+                const markdown = `![Generated Image](/uploads/${filename})`;
+                return { att, markdown };
+            } else {
+                console.warn(`[ChatService] No inlineData part found in AI response.`);
+                console.log(`[ChatService] Parts returned:`, JSON.stringify(parts.map((p: any) => ({ ...p, inlineData: p.inlineData ? '[BINARY]' : undefined }))));
             }
         } catch (err) {
-            console.error(`[ChatService] Individual image generation failed (index ${index}):`, err.message);
+            console.error(`[ChatService] Individual image generation failed:`, err.message, err.stack);
         }
         return null;
     };
 
-    const results = await Promise.all(Array.from({ length: safeCount }).map((_, i) => generateSingleImage(i)));
-    for (const r of results) { if (r) generatedAttachments.push(r); }
-
-    const displayPrompt = prompt.length > 100 ? prompt.substring(0, 97) + "..." : prompt;
-    const responseText = generatedAttachments.length > 0 
-        ? `Generated ${generatedAttachments.length} distinct image(s) for: ${displayPrompt}` 
-        : "Image generation failed.";
-
-    const res = await pool.query(
-        "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
-        [conversationId, 'model', responseText]
-    );
-    const messageId = res.rows[0].id;
-
-    for (const att of generatedAttachments) {
-        await pool.query(
-          "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
-          [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
-        );
+    const result = await generateSingleImage(0);
+    if (result) {
+        generatedAttachments.push(result.att);
+        markdownLinks = result.markdown;
     }
 
-    await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-    return { response: responseText, attachments: generatedAttachments, id: messageId };
+    return { response: "Generated image.", attachments: generatedAttachments, markdown: markdownLinks };
   }
 
   private async handleDirectImageGeneration(conversationId: string, modelId: string, prompt: string, lastImageContext: any[] = []) {
     const ai = await this.getAI();
     const generatedAttachments: any[] = [];
+    let markdownLinks = "";
     
+    console.log(`[ChatService] handleDirectImageGeneration: modelId="${modelId}", prompt="${prompt}", contextCount=${lastImageContext.length}`);
+
     try {
-        const countMatch = prompt.match(/(\d+)\s+images?/i);
-        const requestedCount = countMatch ? parseInt(countMatch[1]) : 1;
-        const safeCount = Math.min(Math.max(1, requestedCount), 4);
+        const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
+            try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
+        }).trim();
 
-        console.log(`[ChatService] Direct image generation with ${modelId}: Sending ${safeCount} independent requests`);
+        console.log(`[ChatService] Direct calling ${modelId} with prompt: "${internalCleanedPrompt}"`);
 
-        const generateSingleImage = async (index: number) => {
-            try {
-                const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
-                    try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
-                }).trim();
+        const result = await ai.models.generateContent({
+            model: modelId,
+            contents: [{ 
+                role: 'user', 
+                parts: [
+                    ...lastImageContext, 
+                    { text: lastImageContext.length > 0 
+                        ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. Single image.` 
+                        : `Generate a single image: ${internalCleanedPrompt}.` }
+                ] 
+            }]
+        });
+        
+        console.log(`[ChatService] Direct response received. Candidates: ${result.candidates?.length}`);
 
-                const result = await ai.models.generateContent({
-                    model: modelId,
-                    contents: [{ 
-                        role: 'user', 
-                        parts: [
-                            ...lastImageContext, 
-                            { text: lastImageContext.length > 0 
-                                ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. Variation ${index + 1} of ${safeCount}. Ensure it is a single, distinct image.` 
-                                : `Generate a single, distinct image based on: ${internalCleanedPrompt}. Variation ${index + 1} of ${safeCount}.` }
-                        ] 
-                    }]
-                });
-                
-                const parts = result.candidates?.[0]?.content?.parts || [];
-                const imageParts = parts.filter((p: any) => p.inlineData);
+        const parts = result.candidates?.[0]?.content?.parts || [];
+        const imagePart = parts.find((p: any) => p.inlineData);
 
-                for (const part of imageParts) {
-                    const buffer = Buffer.from(part.inlineData.data, 'base64');
-                    const filename = `gen-${uuidv4()}.png`;
-                    const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
-                    const filePath = path.join(uploadDir, filename);
-                    await fs.writeFile(filePath, buffer);
-                    return { file_name: filename, file_path: filePath, file_type: part.inlineData.mimeType, file_size: buffer.length };
-                }
-            } catch (err) {
-                console.error(`[ChatService] Individual direct image generation failed (index ${index}):`, err.message);
-            }
-            return null;
-        };
+        if (imagePart) {
+            console.log(`[ChatService] Image part found in direct call! Size: ${imagePart.inlineData.data.length} bytes`);
+            const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
+            const filename = `gen-${uuidv4()}.png`;
+            const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
+            const filePath = path.join(uploadDir, filename);
+            await fs.writeFile(filePath, buffer);
+            
+            generatedAttachments.push({ file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length });
+            markdownLinks = `![Generated Image](/uploads/${filename})`;
+        } else {
+            console.warn(`[ChatService] No inlineData part found in direct response.`);
+            console.log(`[ChatService] Parts:`, JSON.stringify(parts.map((p: any) => ({ ...p, inlineData: p.inlineData ? '[BINARY]' : undefined }))));
+        }
+    } catch (err) { console.error(`[ChatService] Direct image failed:`, err.message, err.stack); }
 
-        const results = await Promise.all(Array.from({ length: safeCount }).map((_, i) => generateSingleImage(i)));
-        for (const r of results) { if (r) generatedAttachments.push(r); }
-
-    } catch (err) { console.error(`[ChatService] Direct image batch failed:`, err.message); }
-
-    const displayPrompt = prompt.length > 100 ? prompt.substring(0, 97) + "..." : prompt;
-    const responseText = generatedAttachments.length > 0 
-        ? `Generated ${generatedAttachments.length} distinct image(s) for: ${displayPrompt}` 
-        : "Image generation failed. Ensure your prompt is descriptive.";
-
+    const responseText = markdownLinks || "Image generation failed.";
     const res = await pool.query(
         "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
         [conversationId, 'model', responseText]
