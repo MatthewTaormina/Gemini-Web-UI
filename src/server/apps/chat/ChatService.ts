@@ -285,36 +285,50 @@ export class ChatService {
             return objects;
         };
 
+        const cleanPrompt = (p: any): string => {
+            if (!p) return "";
+            if (typeof p === 'object') {
+                const val = p.prompt || p.description || p.text || p.action_input?.prompt || p.action_input || JSON.stringify(p);
+                return cleanPrompt(val);
+            }
+            let str = String(p).trim();
+            // Try to parse if it looks like JSON
+            if (str.startsWith('{') && str.endsWith('}')) {
+                try {
+                    const parsed = JSON.parse(str);
+                    return cleanPrompt(parsed);
+                } catch (e) {}
+            }
+            // Strip markdown JSON blocks if any
+            str = str.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
+            str = str.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
+            // Final check: if it still looks like a JSON fragment, it might be escaped
+            if (str.includes('": "')) {
+                try {
+                   const wrapped = JSON.parse(`{${str}}`);
+                   return cleanPrompt(wrapped);
+                } catch(e) {}
+            }
+            return str;
+        };
+
         const foundObjects = findJsonObjects(textPartsRaw);
         const toolCalls: { name: string, args: any }[] = [];
         const jsonStringsToStrip: string[] = [];
 
-        const extractDeepPrompt = (args: any): { prompt: string, count: number } => {
-            let p = args.prompt || args.description || args.action_input?.prompt || (typeof args === 'string' ? args : "");
-            if (typeof p === 'object' && p !== null) {
-                p = p.prompt || p.description || JSON.stringify(p);
-            }
-            if (typeof p === 'string' && (p.startsWith('{') || p.includes('": "'))) {
-                try {
-                    const parsed = JSON.parse(p);
-                    p = parsed.prompt || parsed.description || p;
-                } catch (e) {}
-            }
-            const c = parseInt(args.count || args.n || args.action_input?.count || 1);
-            return { prompt: String(p), count: isNaN(c) ? 1 : c };
-        };
-
         for (const obj of foundObjects) {
             const data = obj.data;
             const isImageTool = data.name === 'generate_image' || data.action === 'generate_image' || 
-                               data.action === 'dalle.text2im' || data.action === 'image_gen' || data.action === 'text2im';
+                               data.action === 'dalle.text2im' || data.action === 'image_gen' || data.action === 'text2im' ||
+                               data.prompt && (data.action || data.name);
             const isMathTool = data.name === 'calculate' || data.action === 'calculate';
             
             if (isImageTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
                 if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = { prompt: args }; } }
-                const { prompt: finalPrompt, count: finalCount } = extractDeepPrompt(args);
-                toolCalls.push({ name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } });
+                const prompt = cleanPrompt(args);
+                const count = parseInt(args.count || args.n || 1);
+                toolCalls.push({ name: 'generate_image', args: { prompt, count: isNaN(count) ? 1 : count } });
                 jsonStringsToStrip.push(obj.raw);
             } else if (isMathTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
@@ -327,8 +341,9 @@ export class ChatService {
         const formalToolCall = responseParts.find((p: any) => p.functionCall)?.functionCall;
         if (formalToolCall) {
             if (formalToolCall.name === 'generate_image') {
-                const { prompt: finalPrompt, count: finalCount } = extractDeepPrompt(formalToolCall.args);
-                toolCalls.push({ name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } });
+                const prompt = cleanPrompt(formalToolCall.args);
+                const count = parseInt(formalToolCall.args.count || formalToolCall.args.n || 1);
+                toolCalls.push({ name: 'generate_image', args: { prompt, count: isNaN(count) ? 1 : count } });
             } else if (formalToolCall.name === 'calculate') {
                 toolCalls.push({ name: 'calculate', args: { expression: formalToolCall.args.expression } });
             }
