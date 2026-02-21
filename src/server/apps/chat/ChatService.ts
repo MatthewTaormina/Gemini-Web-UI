@@ -286,20 +286,19 @@ export class ChatService {
         };
 
         const foundObjects = findJsonObjects(textPartsRaw);
-        let toolCallFromText = null;
-        let jsonToStrip = "";
+        const toolCalls: { name: string, args: any }[] = [];
+        const jsonStringsToStrip: string[] = [];
 
         const extractDeepPrompt = (args: any): { prompt: string, count: number } => {
             let p = args.prompt || args.description || args.action_input?.prompt || (typeof args === 'string' ? args : "");
             if (typeof p === 'object' && p !== null) {
                 p = p.prompt || p.description || JSON.stringify(p);
             }
-            // Aggressively strip any remaining JSON structures if the model hallucinated them into the string
             if (typeof p === 'string' && (p.startsWith('{') || p.includes('": "'))) {
                 try {
                     const parsed = JSON.parse(p);
                     p = parsed.prompt || parsed.description || p;
-                } catch(e) {}
+                } catch (e) {}
             }
             const c = parseInt(args.count || args.n || args.action_input?.count || 1);
             return { prompt: String(p), count: isNaN(c) ? 1 : c };
@@ -314,67 +313,73 @@ export class ChatService {
             if (isImageTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
                 if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = { prompt: args }; } }
-                
                 const { prompt: finalPrompt, count: finalCount } = extractDeepPrompt(args);
-                toolCallFromText = { name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } };
-                jsonToStrip = obj.raw;
-                break;
+                toolCalls.push({ name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } });
+                jsonStringsToStrip.push(obj.raw);
             } else if (isMathTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
                 if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = { expression: args }; } }
-                
-                toolCallFromText = { name: 'calculate', args: { expression: args.expression || (typeof args === 'string' ? args : "") } };
-                jsonToStrip = obj.raw;
-                break;
+                toolCalls.push({ name: 'calculate', args: { expression: args.expression || (typeof args === 'string' ? args : "") } });
+                jsonStringsToStrip.push(obj.raw);
             }
         }
 
         const formalToolCall = responseParts.find((p: any) => p.functionCall)?.functionCall;
-        let toolCall = formalToolCall || toolCallFromText;
-        
-        // Final cleanup and mapping for tools
         if (formalToolCall) {
             if (formalToolCall.name === 'generate_image') {
                 const { prompt: finalPrompt, count: finalCount } = extractDeepPrompt(formalToolCall.args);
-                toolCall = { name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } };
+                toolCalls.push({ name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } });
             } else if (formalToolCall.name === 'calculate') {
-                toolCall = { name: 'calculate', args: { expression: formalToolCall.args.expression } };
+                toolCalls.push({ name: 'calculate', args: { expression: formalToolCall.args.expression } });
             }
         }
 
         let cleanedText = textPartsRaw;
-        if (jsonToStrip) {
-            cleanedText = cleanedText.replace(jsonToStrip, "").replace(/```json\s*```/g, "").replace(/```\s*```/g, "").trim();
+        for (const s of jsonStringsToStrip) {
+            cleanedText = cleanedText.replace(s, "");
         }
+        cleanedText = cleanedText.replace(/```json\s*```/g, "").replace(/```\s*```/g, "").trim();
 
-        if (cleanedText && toolCall) {
-            await pool.query(
-                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
-                [conversationId, 'model', cleanedText]
-            );
-        }
+        let finalResponseText = cleanedText;
+        const allAttachments: any[] = [];
+        let lastMsgId = null;
 
-        if (toolCall && toolCall.name === 'generate_image') {
-            const { prompt: imgPrompt, count = 1 } = toolCall.args;
-            return await this.performImageModelHandoff(conversationId, imgPrompt, count, focusImages);
-        } else if (toolCall && toolCall.name === 'calculate') {
-            const { expression } = toolCall.args;
-            let resultText = "";
-            try {
-                // Basic math evaluation for safety; in production use a dedicated math library
-                // eslint-disable-next-line no-eval
-                const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
-                resultText = `The result of ${expression} is ${evalResult}.`;
-            } catch (e) {
-                resultText = `Failed to calculate ${expression}.`;
+        if (toolCalls.length > 0) {
+            // If there's preamble text, save it first
+            if (cleanedText) {
+                await pool.query(
+                    "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3)",
+                    [conversationId, 'model', cleanedText]
+                );
             }
 
-            const res = await pool.query(
-                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
-                [conversationId, 'model', resultText]
-            );
+            for (const toolCall of toolCalls) {
+                if (toolCall.name === 'generate_image') {
+                    const { prompt: imgPrompt, count = 1 } = toolCall.args;
+                    const result = await this.performImageModelHandoff(conversationId, imgPrompt, count, focusImages);
+                    allAttachments.push(...(result.attachments || []));
+                    finalResponseText += (finalResponseText ? "\n\n" : "") + result.response;
+                    lastMsgId = result.id;
+                } else if (toolCall.name === 'calculate') {
+                    const { expression } = toolCall.args;
+                    let resultText = "";
+                    try {
+                        // eslint-disable-next-line no-eval
+                        const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
+                        resultText = `The result of ${expression} is ${evalResult}.`;
+                    } catch (e) {
+                        resultText = `Failed to calculate ${expression}.`;
+                    }
+                    const res = await pool.query(
+                        "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
+                        [conversationId, 'model', resultText]
+                    );
+                    finalResponseText += (finalResponseText ? "\n\n" : "") + resultText;
+                    lastMsgId = res.rows[0].id;
+                }
+            }
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: resultText, attachments: [], id: res.rows[0].id };
+            return { response: finalResponseText, attachments: allAttachments, id: lastMsgId };
         } else {
             const finalResponseText = cleanedText || textPartsRaw || "No response received.";
             const res = await pool.query(
