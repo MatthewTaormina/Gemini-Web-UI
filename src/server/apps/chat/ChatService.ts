@@ -59,8 +59,12 @@ export class ChatService {
     return volume.id;
   }
 
-  private async getImageUrl(fileId: string) {
-    return await storageService.getFileUrl(fileId);
+  private async getImageUrl(fileId: string, token?: string) {
+    const url = await storageService.getFileUrl(fileId);
+    if (url && url.startsWith('/') && token) {
+      return `${url}?token=${token}`;
+    }
+    return url;
   }
 
   async getConversations(userId: string) {
@@ -137,7 +141,7 @@ export class ChatService {
     }
   }
 
-  async sendMessage(conversationId: string, userId: string, message: string, files: FileAttachment[] = [], enabledTools: string[] = []) {
+  async sendMessage(conversationId: string, userId: string, message: string, files: FileAttachment[] = [], enabledTools: string[] = [], token?: string) {
     try {
         const ai = await this.getAI();
         
@@ -235,7 +239,7 @@ export class ChatService {
         console.log(`[ChatService] Context built. Registry has ${Object.keys(aliasRegistry).length} images.`);
 
         if (modelName.includes('-image')) {
-            return this.handleDirectImageGeneration(conversationId, userId, modelName, message, currentMessageAttachments);
+            return this.handleDirectImageGeneration(conversationId, userId, modelName, message, currentMessageAttachments, token);
         }
 
         // 3. Define Tools
@@ -411,7 +415,7 @@ export class ChatService {
                         activeContext = currentMessageAttachments;
                     }
 
-                    const result = await this.performImageModelHandoff(conversationId, userId, cleanPrompt(imgPrompt), 1, activeContext);
+                    const result = await this.performImageModelHandoff(conversationId, userId, cleanPrompt(imgPrompt), 1, activeContext, token);
                     if (result && result.markdown) {
                         allAttachments.push(...(result.attachments || []));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + result.markdown;
@@ -454,7 +458,7 @@ export class ChatService {
     }
   }
 
-  private async performImageModelHandoff(conversationId: string, userId: string, prompt: string, count: number, lastImageContext: any[] = []) {
+  private async performImageModelHandoff(conversationId: string, userId: string, prompt: string, count: number, lastImageContext: any[] = [], token?: string) {
     try {
         const ai = await this.getAI();
         const imageModelId = 'gemini-2.5-flash-image';
@@ -498,14 +502,14 @@ export class ChatService {
               file_type: imagePart.inlineData.mimeType, 
               file_size: buffer.length 
             };
-            const markdown = `![Generated Image](${await this.getImageUrl(storageFile.id)})`;
+            const markdown = `![Generated Image](${await this.getImageUrl(storageFile.id, token)})`;
             return { attachments: [att], markdown };
         }
     } catch (err: any) { console.error(`[ChatService] Handoff failed:`, err.message); }
     return null;
   }
 
-  private async handleDirectImageGeneration(conversationId: string, userId: string, modelId: string, prompt: string, lastImageContext: any[] = []) {
+  private async handleDirectImageGeneration(conversationId: string, userId: string, modelId: string, prompt: string, lastImageContext: any[] = [], token?: string) {
     try {
         const ai = await this.getAI();
         const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
@@ -546,7 +550,7 @@ export class ChatService {
               file_type: imagePart.inlineData.mimeType, 
               file_size: buffer.length 
             };
-            const markdown = `![Generated Image](${await this.getImageUrl(storageFile.id)})`;
+            const markdown = `![Generated Image](${await this.getImageUrl(storageFile.id, token)})`;
             const modelMsgRes = await pool.query(
                 "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", 
                 [conversationId, 'model', markdown]

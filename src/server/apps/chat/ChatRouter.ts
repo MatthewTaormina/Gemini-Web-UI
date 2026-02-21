@@ -57,7 +57,10 @@ router.post('/conversations/:id/messages', upload.array('files'), async (req: Au
       size: f.size
     }));
 
-    const result = await chatService.sendMessage(req.params.id as string, userId, content, files, enabledTools);
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    const result = await chatService.sendMessage(req.params.id as string, userId, content, files, enabledTools, token);
     res.json(result);
   } catch (err: any) {
     console.error(`Error in chat route:`, err);

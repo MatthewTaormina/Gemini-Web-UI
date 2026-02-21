@@ -36,7 +36,12 @@ export const getJwtSecret = async () => {
 
 export const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  let token = authHeader && authHeader.split(' ')[1];
+
+  // Also check query parameter for cases like <img> tags
+  if (!token && req.query.token) {
+    token = req.query.token as string;
+  }
 
   if (!token) return res.status(401).json({ error: 'No token provided' });
 
