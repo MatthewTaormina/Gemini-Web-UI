@@ -136,7 +136,7 @@ const SettingsManagement: React.FC<{ token: string | null; checkPermission: (a: 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h1>Settings Management</h1>
+        <h1>Global Settings</h1>
         {(canUpdate || canManage) && (
           <button className="btn" style={{ width: 'auto' }} onClick={() => setShowCreateForm(true)}>+ New Setting</button>
         )}

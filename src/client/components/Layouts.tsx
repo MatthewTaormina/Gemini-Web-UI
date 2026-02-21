@@ -28,7 +28,7 @@ export const DashboardLayout: React.FC<{ username: string; _isRoot: boolean; onL
             <li><Link to="/dashboard/users">Users</Link></li>
             <li><Link to="/dashboard/roles">Roles</Link></li>
             <li><Link to="/dashboard/permissions">Permissions</Link></li>
-            <li><Link to="/dashboard/settings">Settings</Link></li>
+            <li><Link to="/dashboard/settings">Global Settings</Link></li>
             <li><Link to="/">Back to Site</Link></li>
           </ul>
         </nav>
