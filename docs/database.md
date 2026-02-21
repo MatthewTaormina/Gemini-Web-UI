@@ -51,6 +51,16 @@ Individual fine-grained actions following the `action:resource` or `action:resou
 ### `role_permissions`
 Many-to-many relationship between roles and permissions. This defines the **Policy** for each role.
 
+### `settings`
+Hierarchical key-value store using the `ltree` extension for the keys and `jsonb` for the values. This allows for both global and user-specific settings, as well as complex nested configurations.
+
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `key` | LTREE | Primary Key (e.g., `global.system`, `user.1234.app.chat`) |
+| `value` | JSONB | The actual configuration data |
+| `created_at` | TIMESTAMP | Creation time |
+| `updated_at` | TIMESTAMP | Last modification time |
+
 ## Constraints
 - **Singleton Root**: Only one user can have `is_root = true`.
 - **Immutable Root**: The root user cannot be deleted (either hard or soft delete).

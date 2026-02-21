@@ -55,3 +55,12 @@ The Chat application introduces a specialized "AI-first" design language.
 ### 3.2 Responsive Design
 - **Admin Tables**: Optimized for desktop viewing but includes scrollable wrappers for smaller screens.
 - **Cards**: Use CSS Grid with `repeat(auto-fill, minmax(350px, 1fr))` to reflow naturally based on viewport width.
+
+---
+
+## 4. Settings Management
+
+The settings view in the administrative dashboard exposes the underlying hierarchical `ltree` settings system.
+- **Hierarchical Path Input**: Allows administrators to specify precise configuration paths (e.g., `global.app.chat.default_model`).
+- **JSON Editor**: Uses a specialized text area that validates JSON input before saving, preventing malformed configuration values from entering the `jsonb` column.
+- **Immediate Feedback**: Successful updates display transient success states, and invalid JSON immediately highlights errors without refreshing the page.
