@@ -153,6 +153,15 @@ export class StorageService {
         return { stream, mimeType: file.mime_type, filename: file.filename };
     }
 
+    async getFileBuffer(fileId: string): Promise<Buffer> {
+        const res = await pool.query('SELECT * FROM files WHERE id = $1', [fileId]);
+        if (res.rows.length === 0) throw new Error('File not found');
+        const file = res.rows[0];
+
+        const driver = await this.getDriverForVolume(file.volume_id);
+        return driver.readFile(file.storage_path);
+    }
+
     async getFileUrl(fileId: string): Promise<string | null> {
         const res = await pool.query('SELECT * FROM files WHERE id = $1', [fileId]);
         if (res.rows.length === 0) return null;
@@ -165,6 +174,25 @@ export class StorageService {
 
         // Fallback to local server proxy URL
         return `/api/storage/file/${file.id}`;
+    }
+
+    async deleteFile(fileId: string): Promise<void> {
+        const res = await pool.query('SELECT * FROM files WHERE id = $1', [fileId]);
+        if (res.rows.length === 0) return;
+        const file = res.rows[0];
+
+        const driver = await this.getDriverForVolume(file.volume_id);
+        
+        // 1. Delete from Driver
+        await driver.deleteFile(file.storage_path);
+
+        // 2. Delete from DB
+        await pool.query('DELETE FROM files WHERE id = $1', [fileId]);
+
+        // 3. Update Quota
+        await pool.query('UPDATE storage_volumes SET quota_used = quota_used - $1 WHERE id = $2', [file.size, file.volume_id]);
+        
+        // Note: We could also update user/app quotas here, but for simplicity let's stick to volume for now.
     }
 }
 

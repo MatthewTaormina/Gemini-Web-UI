@@ -1,20 +1,17 @@
 import { GoogleGenAI } from "@google/genai";
 import pg from 'pg';
 import dotenv from 'dotenv';
-import path from 'path';
-import fs from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
+import { storageService } from '../storage/StorageService.js';
+import { storageVolumeService } from '../storage/StorageVolumeService.js';
+import { pool } from '../../db/pool.js';
 
 dotenv.config();
 
-const { Pool } = pg;
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
-
 export interface FileAttachment {
   filename: string;
-  path: string;
+  buffer?: Buffer;
+  path?: string;
   mimetype: string;
   size: number;
 }
@@ -40,8 +37,30 @@ export class ChatService {
     return this.ai;
   }
 
-  private getImageUrl(filename: string) {
-    return `/uploads/${filename}`;
+  private async getOrCreateUserChatVolume(userId: string): Promise<string> {
+    const res = await pool.query(
+      "SELECT id FROM storage_volumes WHERE owner_user_id = $1 AND owner_app_id = 'chat'",
+      [userId]
+    );
+    
+    if (res.rows.length > 0) return res.rows[0].id;
+
+    // Create a new local volume for this user's chat
+    const volume = await storageVolumeService.createVolume({
+      name: `chat-user-${userId}`,
+      owner_user_id: userId,
+      owner_app_id: 'chat',
+      driver: 'local',
+      config: { local_path: `./storage_data/users/${userId}/chat` },
+      auto_path_strategy: 'uuid',
+      default_prefix: 'chat'
+    });
+
+    return volume.id;
+  }
+
+  private async getImageUrl(fileId: string) {
+    return await storageService.getFileUrl(fileId);
   }
 
   async getConversations(userId: string) {
@@ -144,17 +163,31 @@ export class ChatService {
         }
 
         const currentMessageAttachments: any[] = [];
+        const volumeId = await this.getOrCreateUserChatVolume(userId);
+
         for (const file of files) {
+          if (!file.buffer) continue;
+
+          // 1.1 Upload to StorageService
+          const storageFile = await storageService.uploadFile({
+            volumeId,
+            userId,
+            appId: 'chat',
+            namespace: 'users',
+            filename: file.filename,
+            buffer: file.buffer,
+            mimeType: file.mimetype
+          });
+
+          // 1.2 Save to Chat Attachments
           await pool.query(
-            "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
-            [userMessageId, conversationId, file.filename, file.path, file.mimetype, file.size]
+            "INSERT INTO attachments (message_id, conversation_id, file_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            [userMessageId, conversationId, storageFile.id, file.filename, storageFile.storage_path, file.mimetype, file.size]
           );
-          try {
-              const fileBuffer = await fs.readFile(file.path);
-              currentMessageAttachments.push({
-                  inlineData: { data: fileBuffer.toString('base64'), mimeType: file.mimetype }
-              });
-          } catch (e) { console.error(`[ChatService] Failed to read uploaded file ${file.path}:`, e); }
+
+          currentMessageAttachments.push({
+            inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype }
+          });
         }
 
         // 2. Fetch history and build contents
@@ -168,7 +201,7 @@ export class ChatService {
           ORDER BY m.created_at ASC
         `, [conversationId]);
 
-        const aliasRegistry: Record<string, { path: string, filename: string, type: string }> = {};
+        const aliasRegistry: Record<string, { file_id: string, type: string }> = {};
         let imgCounter = 1;
 
         const contents = await Promise.all(historyRes.rows.map(async (row, idx) => {
@@ -180,19 +213,17 @@ export class ChatService {
           for (const att of row.attachments) {
             if (att.file_type.startsWith('image/')) {
                 const alias = `IMG_${imgCounter++}`;
-                aliasRegistry[alias] = { path: att.file_path, filename: att.file_name, type: att.file_type };
+                aliasRegistry[alias] = { file_id: att.file_id, type: att.file_type };
                 if (!contentText.includes(alias)) {
                     contentText += `\n[Context: Image ${alias}]`;
                 }
                 
-                // ONLY include ACTUAL image data if it is from the VERY LAST message
-                // This prevents payload explosion while maintaining tool awareness
                 const isCurrentTurn = idx === historyRes.rows.length - 1;
-                if (isCurrentTurn) {
+                if (isCurrentTurn && att.file_id) {
                     try {
-                      const fileBuffer = await fs.readFile(att.file_path);
+                      const fileBuffer = await storageService.getFileBuffer(att.file_id);
                       parts.push({ inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } });
-                    } catch (e) { console.warn(`[ChatService] Context file error: ${att.file_path}`); }
+                    } catch (e) { console.warn(`[ChatService] Context file error: ${att.file_id}`); }
                 }
             }
           }
@@ -204,7 +235,7 @@ export class ChatService {
         console.log(`[ChatService] Context built. Registry has ${Object.keys(aliasRegistry).length} images.`);
 
         if (modelName.includes('-image')) {
-            return this.handleDirectImageGeneration(conversationId, modelName, message, currentMessageAttachments);
+            return this.handleDirectImageGeneration(conversationId, userId, modelName, message, currentMessageAttachments);
         }
 
         // 3. Define Tools
@@ -369,8 +400,8 @@ export class ChatService {
                     // Resolve source_image alias if provided
                     if (source_image && aliasRegistry[source_image]) {
                         try {
-                            const buffer = await fs.readFile(aliasRegistry[source_image].path);
-                            activeContext = [{ inlineData: { data: buffer.toString('base64'), mimeType: aliasRegistry[source_image].type } }];
+                            const fileBuffer = await storageService.getFileBuffer(aliasRegistry[source_image].file_id);
+                            activeContext = [{ inlineData: { data: fileBuffer.toString('base64'), mimeType: aliasRegistry[source_image].type } }];
                             console.log(`[ChatService] Resolved context alias ${source_image}`);
                         } catch (e) {}
                     }
@@ -380,7 +411,7 @@ export class ChatService {
                         activeContext = currentMessageAttachments;
                     }
 
-                    const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, activeContext);
+                    const result = await this.performImageModelHandoff(conversationId, userId, cleanPrompt(imgPrompt), 1, activeContext);
                     if (result && result.markdown) {
                         allAttachments.push(...(result.attachments || []));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + result.markdown;
@@ -410,8 +441,8 @@ export class ChatService {
 
         for (const att of allAttachments) {
             await pool.query(
-                "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", 
-                [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
+                "INSERT INTO attachments (message_id, conversation_id, file_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6, $7)", 
+                [modelMessageId, conversationId, att.file_id, att.file_name, att.file_path, att.file_type, att.file_size]
             );
         }
         await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
@@ -423,7 +454,7 @@ export class ChatService {
     }
   }
 
-  private async performImageModelHandoff(conversationId: string, prompt: string, count: number, lastImageContext: any[] = []) {
+  private async performImageModelHandoff(conversationId: string, userId: string, prompt: string, count: number, lastImageContext: any[] = []) {
     try {
         const ai = await this.getAI();
         const imageModelId = 'gemini-2.5-flash-image';
@@ -448,19 +479,33 @@ export class ChatService {
         if (imagePart) {
             const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
             const filename = `gen-${uuidv4()}.png`;
-            const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
-            const filePath = path.join(uploadDir, filename);
-            await fs.writeFile(filePath, buffer);
+            const volumeId = await this.getOrCreateUserChatVolume(userId);
+
+            const storageFile = await storageService.uploadFile({
+              volumeId,
+              userId,
+              appId: 'chat',
+              namespace: 'users',
+              filename,
+              buffer,
+              mimeType: imagePart.inlineData.mimeType
+            });
             
-            const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
-            const markdown = `![Generated Image](${this.getImageUrl(filename)})`;
+            const att = { 
+              file_id: storageFile.id, 
+              file_name: filename, 
+              file_path: storageFile.storage_path, 
+              file_type: imagePart.inlineData.mimeType, 
+              file_size: buffer.length 
+            };
+            const markdown = `![Generated Image](${await this.getImageUrl(storageFile.id)})`;
             return { attachments: [att], markdown };
         }
     } catch (err: any) { console.error(`[ChatService] Handoff failed:`, err.message); }
     return null;
   }
 
-  private async handleDirectImageGeneration(conversationId: string, modelId: string, prompt: string, lastImageContext: any[] = []) {
+  private async handleDirectImageGeneration(conversationId: string, userId: string, modelId: string, prompt: string, lastImageContext: any[] = []) {
     try {
         const ai = await this.getAI();
         const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
@@ -482,20 +527,34 @@ export class ChatService {
         if (imagePart) {
             const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
             const filename = `gen-${uuidv4()}.png`;
-            const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
-            const filePath = path.join(uploadDir, filename);
-            await fs.writeFile(filePath, buffer);
+            const volumeId = await this.getOrCreateUserChatVolume(userId);
+
+            const storageFile = await storageService.uploadFile({
+              volumeId,
+              userId,
+              appId: 'chat',
+              namespace: 'users',
+              filename,
+              buffer,
+              mimeType: imagePart.inlineData.mimeType
+            });
             
-            const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
-            const markdown = `![Generated Image](${this.getImageUrl(filename)})`;
+            const att = { 
+              file_id: storageFile.id,
+              file_name: filename, 
+              file_path: storageFile.storage_path, 
+              file_type: imagePart.inlineData.mimeType, 
+              file_size: buffer.length 
+            };
+            const markdown = `![Generated Image](${await this.getImageUrl(storageFile.id)})`;
             const modelMsgRes = await pool.query(
                 "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", 
                 [conversationId, 'model', markdown]
             );
             const modelMessageId = modelMsgRes.rows[0].id;
             await pool.query(
-                "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", 
-                [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
+                "INSERT INTO attachments (message_id, conversation_id, file_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6, $7)", 
+                [modelMessageId, conversationId, att.file_id, att.file_name, att.file_path, att.file_type, att.file_size]
             );
             return { response: markdown, attachments: [att], id: modelMessageId };
         }
@@ -506,9 +565,11 @@ export class ChatService {
   }
 
   async deleteConversation(conversationId: string, userId: string) {
-    const attRes = await pool.query("SELECT file_path FROM attachments WHERE conversation_id = $1", [conversationId]);
+    const attRes = await pool.query("SELECT file_id FROM attachments WHERE conversation_id = $1", [conversationId]);
     for (const row of attRes.rows) {
-      try { await fs.unlink(row.file_path); } catch (e) {}
+      if (row.file_id) {
+        try { await storageService.deleteFile(row.file_id); } catch (e) { console.error(`[ChatService] Failed to delete file ${row.file_id}:`, e); }
+      }
     }
     await pool.query("DELETE FROM conversations WHERE id = $1 AND user_id = $2", [conversationId, userId]);
   }

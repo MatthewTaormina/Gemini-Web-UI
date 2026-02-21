@@ -1,7 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import path from 'path';
-import fs from 'fs';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -19,14 +17,6 @@ const port = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Static serving for chat uploads
-const storagePath = path.resolve(process.env.STORAGE_PATH || './storage_data');
-const uploadDir = path.join(storagePath, 'chat_uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-app.use('/uploads', express.static(uploadDir));
 
 app.get('/api/setup/status', async (req, res) => {
   try {

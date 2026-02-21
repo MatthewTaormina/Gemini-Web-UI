@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS attachments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
     conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+    file_id UUID, -- Links to the centralized files table
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
     file_type TEXT NOT NULL,
