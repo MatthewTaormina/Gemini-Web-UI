@@ -164,55 +164,62 @@ export class ChatService {
           ORDER BY m.created_at ASC
         `, [conversationId]);
 
-        const allHistoryImages: any[] = [];
+        const aliasRegistry: Record<string, { path: string, filename: string }> = {}; // IMG_1 -> metadata
+        let imgCounter = 1;
+
         const contents = await Promise.all(historyRes.rows.map(async (row, idx) => {
           const parts: any[] = [];
-          if (row.content) parts.push({ text: row.content });
           
-          const isRecent = idx >= historyRes.rows.length - 2;
-          if (isRecent) {
+          let contentText = row.content || "";
+          for (const att of row.attachments) {
+            if (att.file_type.startsWith('image/')) {
+                const alias = `IMG_${imgCounter++}`;
+                aliasRegistry[alias] = { path: att.file_path, filename: att.file_name };
+                // Inject the alias into the message text so the model knows what's what
+                contentText += `\n[This image is referenced as ${alias}]`;
+            }
+          }
+          if (contentText) parts.push({ text: contentText });
+
+          // ONLY include actual image data for the current turn or very recent context
+          const isVeryRecent = idx >= historyRes.rows.length - 1;
+          if (isVeryRecent) {
               for (const att of row.attachments) {
-                try {
-                  const fileBuffer = await fs.readFile(att.file_path);
-                  const inlinePart = { inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } };
-                  parts.push(inlinePart);
-                  if (att.file_type.startsWith('image/')) allHistoryImages.push({ part: inlinePart, id: att.file_name });
-                } catch (e) {}
+                if (att.file_type.startsWith('image/')) {
+                    try {
+                      const fileBuffer = await fs.readFile(att.file_path);
+                      parts.push({ inlineData: { data: fileBuffer.toString('base64'), mimeType: att.file_type } });
+                    } catch (e) {}
+                }
               }
           }
           if (parts.length === 0) parts.push({ text: "" });
           return { role: row.role === 'model' ? 'model' : 'user', parts };
         }));
 
-        let focusImages: any[] = [];
-        if (currentMessageAttachments.length > 0) {
-            focusImages = currentMessageAttachments;
-        } else {
-            focusImages = allHistoryImages.map(h => h.part).slice(-2); 
-        }
-
         if (modelName.includes('-image')) {
-            return this.handleDirectImageGeneration(conversationId, modelName, message, focusImages);
+            return this.handleDirectImageGeneration(conversationId, modelName, message, currentMessageAttachments);
         }
 
         const tools: any[] = [];
         let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nTool: 'generate_image(prompt, source_image)'. Generates an image.\n" +
-                                   "If the user wants to edit or refer to an existing image, provide its filename (e.g. gen-UUID.png) in 'source_image'.\n" +
-                                   "DO NOT hallucinate filenames. ONLY use filenames shown in previous messages.\n" +
-                                   "Call this tool to generate images. The system will handle displaying them.";
+          systemInstructionText += "\n\nCRITICAL: To generate or edit images, you MUST use 'generate_image(prompt, source_image)'.\n" +
+                                   "Images in history are labeled like 'IMG_1', 'IMG_2', etc.\n" +
+                                   "If you want to edit an image, pass its label (e.g. 'IMG_1') to 'source_image'.\n" +
+                                   "DO NOT write Markdown links. The system resolves your text and labels automatically.\n" +
+                                   "Call this tool once per image. Format: {\"action\": \"generate_image\", \"action_input\": {\"prompt\": \"...\", \"source_image\": \"IMG_1\"}}";
           
           tools.push({
             functionDeclarations: [{
               name: "generate_image",
-              description: "Generates a single image. Optional source_image for edits.",
+              description: "Generates a single image. Use 'source_image' label (e.g. IMG_1) for edits.",
               parameters: {
                 type: "object",
                 properties: {
                   prompt: { type: "string", description: "Detailed description of the image." },
-                  source_image: { type: "string", description: "Optional: filename of an image to use as base context." }
+                  source_image: { type: "string", description: "Optional: label of a previous image (e.g. IMG_1) to use as base context." }
                 },
                 required: ["prompt"]
               }
@@ -221,7 +228,7 @@ export class ChatService {
         }
 
         if (enabledTools.includes('math')) {
-            systemInstructionText += "\n\nTool: 'calculate(expression)'. Evaluates math expressions.\n" +
+            systemInstructionText += "\n\nTool: 'calculate(expression)'. Use for math.\n" +
                                      "Format: {\"action\": \"calculate\", \"action_input\": {\"expression\": \"...\"}}";
             
             tools.push({
@@ -266,15 +273,14 @@ export class ChatService {
                     if (count === 0 && start !== -1) {
                         const potential = text.substring(start, i + 1);
                         try {
-                            let fixed = potential;
-                            if (potential.includes('"action_input": "{')) {
-                                fixed = potential.replace(/\"action_input\":\s*\"(\{[\s\S]*?\})\"/g, (m, p1) => {
-                                    return `"action_input": ${JSON.stringify(p1)}`;
-                                });
-                            }
-                            objects.push({ data: JSON.parse(fixed), raw: potential });
+                            objects.push({ data: JSON.parse(potential), raw: potential });
                         } catch (e) {
-                            try { objects.push({ data: JSON.parse(potential), raw: potential }); } catch(e2) {}
+                            try {
+                                if (potential.includes('"action_input": "{')) {
+                                    const fixed = potential.replace(/\"action_input\":\s*\"(\{[\s\S]*?\})\"/g, (m, p1) => `\"action_input\": ${JSON.stringify(p1)}`);
+                                    objects.push({ data: JSON.parse(fixed), raw: potential });
+                                }
+                            } catch(e2) {}
                         }
                     }
                 }
@@ -296,10 +302,8 @@ export class ChatService {
                     return cleanPrompt(parsed);
                 } catch (e) {}
             }
-            str = str.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
-            str = str.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
-            str = str.replace(/^Prompt:\s*/i, '');
-            return str.trim();
+            str = str.replace(/```json\s*([\s\S]*?)\s*```/g, '$1').replace(/```\s*([\s\S]*?)\s*```/g, '$1');
+            return str.replace(/^Prompt:\s*/i, '').trim();
         };
 
         const foundObjects = findJsonObjects(textPartsRaw);
@@ -337,9 +341,7 @@ export class ChatService {
         }
 
         let cleanedText = textPartsRaw;
-        for (const s of jsonStringsToStrip) {
-            cleanedText = cleanedText.replace(s, "");
-        }
+        for (const s of jsonStringsToStrip) cleanedText = cleanedText.replace(s, "");
         cleanedText = cleanedText.replace(/```json\s*```/g, "").replace(/```\s*```/g, "").trim();
 
         const allAttachments: any[] = [];
@@ -349,11 +351,16 @@ export class ChatService {
             for (const toolCall of toolCalls) {
                 if (toolCall.name === 'generate_image') {
                     const { prompt: imgPrompt, source_image } = toolCall.args;
-                    let activeContext = focusImages;
+                    let activeContext: any[] = [];
                     
-                    if (source_image) {
-                        const specificImg = allHistoryImages.find(h => h.id === source_image);
-                        if (specificImg) activeContext = [specificImg.part];
+                    if (source_image && aliasRegistry[source_image]) {
+                        try {
+                            const buffer = await fs.readFile(aliasRegistry[source_image].path);
+                            activeContext = [{ inlineData: { data: buffer.toString('base64'), mimeType: 'image/png' } }];
+                        } catch (e) {}
+                    }
+                    if (activeContext.length === 0) {
+                        activeContext = currentMessageAttachments.length > 0 ? currentMessageAttachments : (Object.values(aliasRegistry).length > 0 ? [{ inlineData: { data: (await fs.readFile(Object.values(aliasRegistry).pop()!.path)).toString('base64'), mimeType: 'image/png' } }] : []);
                     }
 
                     const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, activeContext);
@@ -366,35 +373,32 @@ export class ChatService {
                     try {
                         const evalResult = eval(expression.replace(/[^0-9+\-*/().\s]/g, ''));
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + `The result of ${expression} is **${evalResult}**.`;
-                    } catch (e) {
-                        finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + `Failed to calculate ${expression}.`;
-                    }
+                    } catch (e) {}
                 }
             }
 
-            const res = await pool.query(
-                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
-                [conversationId, 'model', finalDisplayContent]
-            );
-            const messageId = res.rows[0].id;
-
-            for (const att of allAttachments) {
-                await pool.query(
-                  "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
-                  [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
-                );
+            // Final post-process: Replace any labels the model wrote in its text with Markdown (if applicable)
+            for (const [alias, meta] of Object.entries(aliasRegistry)) {
+                const md = `![Image](${this.getImageUrl(meta.filename)})`;
+                finalDisplayContent = finalDisplayContent.split(`[This image is referenced as ${alias}]`).join(md);
+                finalDisplayContent = finalDisplayContent.split(alias).join(md);
             }
 
+            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent]);
+            const messageId = res.rows[0].id;
+            for (const att of allAttachments) {
+                await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
+            }
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
             return { response: finalDisplayContent, attachments: allAttachments, id: messageId };
         } else {
-            const finalResp = finalDisplayContent || "No response received.";
-            const res = await pool.query(
-                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
-                [conversationId, 'model', finalResp]
-            );
+            // Resolve aliases even if no tool was called (e.g. user asked "What is in IMG_1?")
+            for (const [alias, meta] of Object.entries(aliasRegistry)) {
+                finalDisplayContent = finalDisplayContent.split(`[This image is referenced as ${alias}]`).join(`![Image](${this.getImageUrl(meta.filename)})`);
+            }
+            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent || "No response received."]);
             await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: finalResp, attachments: [], id: res.rows[0].id };
+            return { response: finalDisplayContent || "No response received.", attachments: [], id: res.rows[0].id };
         }
     } catch (error) {
         console.error("[ChatService] FATAL Error in sendMessage:", error);
@@ -416,9 +420,7 @@ export class ChatService {
                 role: 'user', 
                 parts: [
                     ...lastImageContext, 
-                    { text: lastImageContext.length > 0 
-                        ? `Modify this context based on: ${internalCleanedPrompt}. Single image.` 
-                        : `Generate image: ${internalCleanedPrompt}.` } 
+                    { text: lastImageContext.length > 0 ? `Modify context based on: ${internalCleanedPrompt}. Single image.` : `Generate image: ${internalCleanedPrompt}.` } 
                 ] 
             }]
         });
@@ -452,9 +454,7 @@ export class ChatService {
                 role: 'user', 
                 parts: [
                     ...lastImageContext, 
-                    { text: lastImageContext.length > 0 
-                        ? `Modify context: ${internalCleanedPrompt}. Single image.` 
-                        : `Generate image: ${internalCleanedPrompt}.` }
+                    { text: lastImageContext.length > 0 ? `Modify: ${internalCleanedPrompt}. Single image.` : `Generate image: ${internalCleanedPrompt}.` }
                 ] 
             }]
         });
@@ -469,19 +469,12 @@ export class ChatService {
             
             const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
             const markdown = `![Generated Image](${this.getImageUrl(filename)})`;
-            const res = await pool.query(
-                "INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id",
-                [conversationId, 'model', markdown]
-            );
+            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', markdown]);
             const messageId = res.rows[0].id;
-            await pool.query(
-              "INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)",
-              [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]
-            );
+            await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
             return { response: markdown, attachments: [att], id: messageId };
         }
     } catch (err) { console.error(`[ChatService] Direct failed:`, err.message); }
-    
     const failMsg = "Image generation failed.";
     const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', failMsg]);
     return { response: failMsg, attachments: [], id: res.rows[0].id };
