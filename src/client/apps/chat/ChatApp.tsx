@@ -303,38 +303,7 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
                                 </select>
                             </div>
                             <div className="chat-header-actions">
-                                <button 
-                                    className={`action-btn tools-btn ${enabledTools.length > 0 ? 'active' : ''}`}
-                                    onClick={() => setIsToolsModalOpen(!isToolsModalOpen)}
-                                >
-                                    🛠️ Tools ({enabledTools.length})
-                                </button>
-                                {isToolsModalOpen && (
-                                    <div className="tools-modal" style={{ top: '60px', bottom: 'auto', left: 'auto', right: '24px' }}>
-                                        <div className="modal-header">
-                                            <h3>Capabilities</h3>
-                                            <button className="close-modal-btn" onClick={() => setIsToolsModalOpen(false)}>×</button>
-                                        </div>
-                                        <div className="tools-list">
-                                            <div className={`tool-item ${enabledTools.includes('generate_image') ? 'enabled' : ''}`} onClick={() => toggleTool('generate_image')}>
-                                                <span className="tool-icon">🖼️</span>
-                                                <div className="tool-info">
-                                                    <span className="tool-name">Images</span>
-                                                    <span className="tool-desc">Generate AI images</span>
-                                                </div>
-                                                <input type="checkbox" checked={enabledTools.includes('generate_image')} readOnly className="tool-checkbox" />
-                                            </div>
-                                            <div className={`tool-item ${enabledTools.includes('math') ? 'enabled' : ''}`} onClick={() => toggleTool('math')}>
-                                                <span className="tool-icon">🔢</span>
-                                                <div className="tool-info">
-                                                    <span className="tool-name">Math</span>
-                                                    <span className="tool-desc">Solve complex math</span>
-                                                </div>
-                                                <input type="checkbox" checked={enabledTools.includes('math')} readOnly className="tool-checkbox" />
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
+                                <h2>{currentConversation.title}</h2>
                             </div>
                         </header>
 
@@ -446,6 +415,15 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
                                 >
                                     📎
                                 </button>
+                                <button 
+                                    type="button" 
+                                    className={`action-btn tools-btn ${enabledTools.length > 0 ? 'active' : ''}`}
+                                    onClick={() => setIsToolsModalOpen(!isToolsModalOpen)}
+                                    title="Toggle capabilities"
+                                >
+                                    🛠️ <span className="tools-count">{enabledTools.length}</span>
+                                </button>
+
                                 <input 
                                     type="file" 
                                     multiple 
@@ -454,6 +432,33 @@ export default function ChatApp({ token, onLogout }: { token: string, onLogout: 
                                     style={{ display: 'none' }}
                                     accept="image/*,video/*,audio/*,application/pdf,text/*"
                                 />
+
+                                {isToolsModalOpen && (
+                                    <div className="tools-modal">
+                                        <div className="modal-header">
+                                            <h3>Capabilities</h3>
+                                            <button className="close-modal-btn" onClick={() => setIsToolsModalOpen(false)}>×</button>
+                                        </div>
+                                        <div className="tools-list">
+                                            <div className={`tool-item ${enabledTools.includes('generate_image') ? 'enabled' : ''}`} onClick={() => toggleTool('generate_image')}>
+                                                <span className="tool-icon">🖼️</span>
+                                                <div className="tool-info">
+                                                    <span className="tool-name">Images</span>
+                                                    <span className="tool-desc">Generate AI images</span>
+                                                </div>
+                                                <input type="checkbox" checked={enabledTools.includes('generate_image')} readOnly className="tool-checkbox" />
+                                            </div>
+                                            <div className={`tool-item ${enabledTools.includes('math') ? 'enabled' : ''}`} onClick={() => toggleTool('math')}>
+                                                <span className="tool-icon">🔢</span>
+                                                <div className="tool-info">
+                                                    <span className="tool-name">Math</span>
+                                                    <span className="tool-desc">Solve complex math</span>
+                                                </div>
+                                                <input type="checkbox" checked={enabledTools.includes('math')} readOnly className="tool-checkbox" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                                 <textarea
                                     ref={textareaRef}
                                     value={input}

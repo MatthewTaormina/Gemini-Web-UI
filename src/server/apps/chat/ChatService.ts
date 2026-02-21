@@ -309,6 +309,7 @@ export class ChatService {
             const data = obj.data;
             const isImageTool = data.name === 'generate_image' || data.action === 'generate_image' || 
                                data.action === 'dalle.text2im' || data.action === 'image_gen' || data.action === 'text2im';
+            const isMathTool = data.name === 'calculate' || data.action === 'calculate';
             
             if (isImageTool) {
                 let args = data.arguments || data.args || data.action_input || data.parameters || data;
@@ -318,16 +319,27 @@ export class ChatService {
                 toolCallFromText = { name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } };
                 jsonToStrip = obj.raw;
                 break;
+            } else if (isMathTool) {
+                let args = data.arguments || data.args || data.action_input || data.parameters || data;
+                if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = { expression: args }; } }
+                
+                toolCallFromText = { name: 'calculate', args: { expression: args.expression || (typeof args === 'string' ? args : "") } };
+                jsonToStrip = obj.raw;
+                break;
             }
         }
 
         const formalToolCall = responseParts.find((p: any) => p.functionCall)?.functionCall;
         let toolCall = formalToolCall || toolCallFromText;
         
-        // Final cleanup for formal tool call args if they are objects
+        // Final cleanup and mapping for tools
         if (formalToolCall) {
-            const { prompt: finalPrompt, count: finalCount } = extractDeepPrompt(formalToolCall.args);
-            toolCall = { name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } };
+            if (formalToolCall.name === 'generate_image') {
+                const { prompt: finalPrompt, count: finalCount } = extractDeepPrompt(formalToolCall.args);
+                toolCall = { name: 'generate_image', args: { prompt: finalPrompt, count: finalCount } };
+            } else if (formalToolCall.name === 'calculate') {
+                toolCall = { name: 'calculate', args: { expression: formalToolCall.args.expression } };
+            }
         }
 
         let cleanedText = textPartsRaw;
