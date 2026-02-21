@@ -60,12 +60,16 @@ export class SettingsService {
      * Resolves settings for a specific context (user and/or app), merging them hierarchically.
      * Precedence (highest to lowest):
      * 1. global.app.<app_id>.user.<user_id>
-     * 2. global.app.<app_id>
-     * 3. global.user.<user_id>
-     * 4. global.system
+     * 2. global.app.<app_id>.user.default
+     * 3. global.app.<app_id>
+     * 4. global.app.<app_id>.default
+     * 5. global.app.default
+     * 6. global.user.<user_id>
+     * 7. global.user.default
+     * 8. global.system
      */
     async getMergedSettings(appId?: string, userId?: string): Promise<any> {
-        const paths: string[] = ['global.system'];
+        const paths: string[] = ['global.system', 'global.user.default'];
         
         if (userId) {
             const userLabel = this.toLtreeLabel(userId);
@@ -74,7 +78,10 @@ export class SettingsService {
 
         if (appId) {
             const appLabel = this.toLtreeLabel(appId);
+            paths.push('global.app.default');
+            paths.push(`global.app.${appLabel}.default`);
             paths.push(`global.app.${appLabel}`);
+            paths.push(`global.app.${appLabel}.user.default`);
             
             if (userId) {
                 const userLabel = this.toLtreeLabel(userId);
@@ -99,7 +106,12 @@ export class SettingsService {
             merged = this.deepMerge(merged, settingsMap.get('global.system'));
         }
 
-        // 2. User Global
+        // 2. User Default
+        if (settingsMap.has('global.user.default')) {
+            merged = this.deepMerge(merged, settingsMap.get('global.user.default'));
+        }
+
+        // 3. User Global
         if (userId) {
             const path = `global.user.${this.toLtreeLabel(userId)}`;
             if (settingsMap.has(path)) {
@@ -107,7 +119,22 @@ export class SettingsService {
             }
         }
 
-        // 3. App Global
+        // 4. App Default
+        if (appId) {
+            if (settingsMap.has('global.app.default')) {
+                merged = this.deepMerge(merged, settingsMap.get('global.app.default'));
+            }
+        }
+
+        // 5. App Specific Default
+        if (appId) {
+            const path = `global.app.${this.toLtreeLabel(appId)}.default`;
+            if (settingsMap.has(path)) {
+                merged = this.deepMerge(merged, settingsMap.get(path));
+            }
+        }
+
+        // 6. App Global
         if (appId) {
             const path = `global.app.${this.toLtreeLabel(appId)}`;
             if (settingsMap.has(path)) {
@@ -115,7 +142,15 @@ export class SettingsService {
             }
         }
 
-        // 4. App User Specific
+        // 7. App User Default
+        if (appId) {
+            const path = `global.app.${this.toLtreeLabel(appId)}.user.default`;
+            if (settingsMap.has(path)) {
+                merged = this.deepMerge(merged, settingsMap.get(path));
+            }
+        }
+
+        // 8. App User Specific
         if (appId && userId) {
             const path = `global.app.${this.toLtreeLabel(appId)}.user.${this.toLtreeLabel(userId)}`;
             if (settingsMap.has(path)) {
@@ -147,8 +182,12 @@ export class SettingsService {
      * Helper to get ltree path for specific contexts
      */
     getSystemPath(): string { return 'global.system'; }
+    getUserDefaultPath(): string { return 'global.user.default'; }
     getUserPath(userId: string): string { return `global.user.${this.toLtreeLabel(userId)}`; }
+    getAppDefaultPath(): string { return 'global.app.default'; }
+    getAppSpecificDefaultPath(appId: string): string { return `global.app.${this.toLtreeLabel(appId)}.default`; }
     getAppPath(appId: string): string { return `global.app.${this.toLtreeLabel(appId)}`; }
+    getAppUserDefaultPath(appId: string): string { return `global.app.${this.toLtreeLabel(appId)}.user.default`; }
     getAppUserPath(appId: string, userId: string): string { 
         return `global.app.${this.toLtreeLabel(appId)}.user.${this.toLtreeLabel(userId)}`; 
     }

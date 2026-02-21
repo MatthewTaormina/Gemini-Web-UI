@@ -39,5 +39,9 @@ ON CONFLICT DO NOTHING;
 -- Seed default settings
 INSERT INTO settings (key, value) VALUES
     ('global.system', '{"theme": "light", "language": "en", "allow_registration": true}'::jsonb),
-    ('global.app.chat', '{"default_model": "gemini-3-flash-preview", "enable_tools": ["generate_image", "math"]}'::jsonb)
+    ('global.user.default', '{"theme": "system", "timezone": "UTC"}'::jsonb),
+    ('global.app.default', '{"notifications_enabled": true}'::jsonb),
+    ('global.app.chat.default', '{"system_prompt": "You are a helpful assistant."}'::jsonb),
+    ('global.app.chat', '{"default_model": "gemini-3-flash-preview", "enable_tools": ["generate_image", "math"]}'::jsonb),
+    ('global.app.chat.user.default', '{"enter_to_send": true, "show_avatars": true}'::jsonb)
 ON CONFLICT (key) DO NOTHING;
