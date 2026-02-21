@@ -187,8 +187,8 @@ export class ChatService {
         if (currentMessageAttachments.length > 0) {
             focusImages = currentMessageAttachments;
         } else {
-            const lastHistorical = allHistoryImages.pop();
-            if (lastHistorical) focusImages = [lastHistorical];
+            // Include ALL historical images for context, but prioritize the very last one
+            focusImages = allHistoryImages.slice(-4); 
         }
 
         if (modelName.includes('-image')) {
@@ -201,6 +201,7 @@ export class ChatService {
         if (enabledTools.includes('generate_image')) {
           systemInstructionText += "\n\nTool: 'generate_image(prompt)'. Generates an image and returns a Markdown link.\n" +
                                    "You MUST include the returned Markdown link in your final response to display the image to the user.\n" +
+                                   "Markdown format: ![Generated Image](/uploads/FILENAME.png)\n" +
                                    "If you need multiple images, call this tool MULTIPLE times in one turn.\n" +
                                    "Format: {\"action\": \"generate_image\", \"action_input\": {\"prompt\": \"...\"}}";
           
@@ -351,7 +352,6 @@ export class ChatService {
                     const { prompt: imgPrompt } = toolCall.args;
                     const result = await this.performImageModelHandoff(conversationId, cleanPrompt(imgPrompt), 1, focusImages);
                     allAttachments.push(...(result.attachments || []));
-                    // Append markdown link to the response content
                     if (result.markdown) {
                         finalDisplayContent += (finalDisplayContent ? "\n\n" : "") + result.markdown;
                     }
@@ -404,7 +404,7 @@ export class ChatService {
     
     console.log(`[ChatService] performImageModelHandoff: prompt="${prompt}", contextCount=${lastImageContext.length}`);
 
-    const generateSingleImage = async (index: number) => {
+    const generateSingleImage = async () => {
         try {
             const internalCleanedPrompt = prompt.replace(/\{[\s\S]*\}/g, (match) => {
                 try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
@@ -419,14 +419,12 @@ export class ChatService {
                     parts: [
                         ...lastImageContext, 
                         { text: lastImageContext.length > 0 
-                            ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. Ensure it is a single, distinct image.` 
+                            ? `Edit/Modify the provided image context based on this request: ${internalCleanedPrompt}. Ensure it is a single, distinct image.` 
                             : `Generate a single, distinct image based on: ${internalCleanedPrompt}.` } 
                     ] 
                 }]
             });
             
-            console.log(`[ChatService] AI Response received. Candidates: ${result.candidates?.length}`);
-
             const parts = result.candidates?.[0]?.content?.parts || [];
             const imagePart = parts.find((p: any) => p.inlineData);
             
@@ -443,7 +441,6 @@ export class ChatService {
                 return { att, markdown };
             } else {
                 console.warn(`[ChatService] No inlineData part found in AI response.`);
-                console.log(`[ChatService] Parts returned:`, JSON.stringify(parts.map((p: any) => ({ ...p, inlineData: p.inlineData ? '[BINARY]' : undefined }))));
             }
         } catch (err) {
             console.error(`[ChatService] Individual image generation failed:`, err.message, err.stack);
@@ -451,7 +448,7 @@ export class ChatService {
         return null;
     };
 
-    const result = await generateSingleImage(0);
+    const result = await generateSingleImage();
     if (result) {
         generatedAttachments.push(result.att);
         markdownLinks = result.markdown;
@@ -472,8 +469,6 @@ export class ChatService {
             try { const p = JSON.parse(match); return p.prompt || p.description || match; } catch(e) { return match; }
         }).trim();
 
-        console.log(`[ChatService] Direct calling ${modelId} with prompt: "${internalCleanedPrompt}"`);
-
         const result = await ai.models.generateContent({
             model: modelId,
             contents: [{ 
@@ -481,19 +476,16 @@ export class ChatService {
                 parts: [
                     ...lastImageContext, 
                     { text: lastImageContext.length > 0 
-                        ? `Edit/Modify the provided image based on this request: ${internalCleanedPrompt}. Single image.` 
+                        ? `Edit/Modify the provided image context based on this request: ${internalCleanedPrompt}. Single image.` 
                         : `Generate a single image: ${internalCleanedPrompt}.` }
                 ] 
             }]
         });
         
-        console.log(`[ChatService] Direct response received. Candidates: ${result.candidates?.length}`);
-
         const parts = result.candidates?.[0]?.content?.parts || [];
         const imagePart = parts.find((p: any) => p.inlineData);
 
         if (imagePart) {
-            console.log(`[ChatService] Image part found in direct call! Size: ${imagePart.inlineData.data.length} bytes`);
             const buffer = Buffer.from(imagePart.inlineData.data, 'base64');
             const filename = `gen-${uuidv4()}.png`;
             const uploadDir = path.resolve(process.env.STORAGE_PATH || './storage_data', 'chat_uploads');
@@ -502,9 +494,6 @@ export class ChatService {
             
             generatedAttachments.push({ file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length });
             markdownLinks = `![Generated Image](/uploads/${filename})`;
-        } else {
-            console.warn(`[ChatService] No inlineData part found in direct response.`);
-            console.log(`[ChatService] Parts:`, JSON.stringify(parts.map((p: any) => ({ ...p, inlineData: p.inlineData ? '[BINARY]' : undefined }))));
         }
     } catch (err) { console.error(`[ChatService] Direct image failed:`, err.message, err.stack); }
 
