@@ -174,8 +174,8 @@ export class ChatService {
         const contents = await Promise.all(historyRes.rows.map(async (row) => {
           const parts: any[] = [];
           
-          // Strip system-generated Markdown links from history
-          let contentText = (row.content || "").replace(/!\[.*?\]\(\/uploads\/.*?\)/g, "").trim();
+          // Aggressively strip ANY markdown image syntax from history to prevent hallucination
+          let contentText = (row.content || "").replace(/!\[.*?\]\(.*?\)/g, "").trim();
           
           for (const att of row.attachments) {
             if (att.file_type.startsWith('image/')) {
@@ -204,11 +204,11 @@ export class ChatService {
         let systemInstructionText = "You are Gemini, a helpful AI assistant. You have access to tools.";
 
         if (enabledTools.includes('generate_image')) {
-          systemInstructionText += "\n\nCRITICAL: To create or modify images, you MUST call 'generate_image(prompt, source_image)'.\n" +
-                                   "Images in history are labeled 'IMG_1', 'IMG_2', etc.\n" +
-                                   "To refer to an image, use its label in 'source_image'.\n" +
-                                   "NEVER write URLs like '/uploads/...' or Markdown image syntax yourself. You lack file system access.\n" +
-                                   "NEVER repeat the metadata tags like '[Context: Image IMG_N]' in your response.";
+          systemInstructionText += "\n\nCRITICAL: To create or modify images, you MUST use 'generate_image(prompt, source_image)'.\n" +
+                                   "Existing images are labeled 'IMG_1', 'IMG_2', etc.\n" +
+                                   "To refer to an image, pass its label to 'source_image'.\n" +
+                                   "DO NOT write Markdown image syntax (![...](...)) or URLs like '/uploads/...' yourself. YOU LACK PERMISSION.\n" +
+                                   "ONLY output text. If you want to show an image, use the tool. The system will handle the rest.";
           
           tools.push({
             functionDeclarations: [{
@@ -342,9 +342,13 @@ export class ChatService {
             }
         }
 
-        // 6. Finalize output
+        // 6. Aggressive Cleanup of Hallucinations
         let cleanedText = textPartsRaw;
+        // 6a. Strip system strings
         for (const s of jsonStringsToStrip) cleanedText = cleanedText.replace(s, "");
+        // 6b. Aggressively strip ANY markdown image links the model tried to write itself
+        cleanedText = cleanedText.replace(/!\[.*?\]\(.*?\)/g, "");
+        // 6c. Clean markdown blocks
         cleanedText = cleanedText.replace(/```json\s*```/g, "").replace(/```\s*```/g, "").trim();
 
         const allAttachments: any[] = [];
@@ -381,18 +385,13 @@ export class ChatService {
             }
         }
 
-        // Post-process ALL content to resolve aliases and strip lingering metadata
+        // Resolving labels only (stripping metadata, but NOT replacing aliases with images unless they were mentioned)
+        // Note: We removed the alias-to-markdown replacement in text to fulfill "only output link after tool call"
         for (const [alias, meta] of Object.entries(aliasRegistry)) {
-            const md = `![Image](${this.getImageUrl(meta.filename)})`;
-            // Boundary-aware alias replacement
-            const regex = new RegExp("\\b" + alias + "\\b", "g");
-            finalDisplayContent = finalDisplayContent.replace(regex, md);
-            // Aggressive strip of context markers (including any hallucinatory formatting)
             const contextRegex = new RegExp("\\[Context:\\s*Image\\s*" + alias + "\\]", "gi");
             finalDisplayContent = finalDisplayContent.replace(contextRegex, "");
         }
         
-        // Final cleanup of extra whitespace/newlines from stripped tags
         finalDisplayContent = finalDisplayContent.replace(/\n\s*\n\s*\n/g, "\n\n").trim();
 
         const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent || "No response received."]);
@@ -473,9 +472,9 @@ export class ChatService {
             const att = { file_name: filename, file_path: filePath, file_type: imagePart.inlineData.mimeType, file_size: buffer.length };
             const markdown = `![Generated Image](${this.getImageUrl(filename)})`;
             const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', markdown]);
-            const messageId = res.rows[0].id;
-            await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
-            return { response: markdown, attachments: [att], id: messageId };
+            const modelMessageId = res.rows[0].id;
+            await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [modelMessageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
+            return { response: markdown, attachments: [att], id: modelMessageId };
         }
     } catch (err) { console.error(`[ChatService] Direct failed:`, err.message); }
     const failMsg = "Image generation failed.";
