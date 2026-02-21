@@ -174,7 +174,7 @@ export class ChatService {
         const contents = await Promise.all(historyRes.rows.map(async (row) => {
           const parts: any[] = [];
           
-          // IMPORTANT: Strip system-generated Markdown links from history so model doesn't hallucinate them
+          // Strip system-generated Markdown links from history
           let contentText = (row.content || "").replace(/!\[.*?\]\(\/uploads\/.*?\)/g, "").trim();
           
           for (const att of row.attachments) {
@@ -205,10 +205,10 @@ export class ChatService {
 
         if (enabledTools.includes('generate_image')) {
           systemInstructionText += "\n\nCRITICAL: To create or modify images, you MUST call 'generate_image(prompt, source_image)'.\n" +
-                                   "Images in the chat are labeled 'IMG_1', 'IMG_2', etc.\n" +
+                                   "Images in history are labeled 'IMG_1', 'IMG_2', etc.\n" +
                                    "To refer to an image, use its label in 'source_image'.\n" +
-                                   "NEVER write URLs like '/uploads/...' or Markdown images yourself. You DO NOT have file system access.\n" +
-                                   "Output ONLY the tool call when generating. The system will embed the result for the user.";
+                                   "NEVER write URLs like '/uploads/...' or Markdown image syntax yourself. You lack file system access.\n" +
+                                   "NEVER repeat the metadata tags like '[Context: Image IMG_N]' in your response.";
           
           tools.push({
             functionDeclarations: [{
@@ -259,7 +259,7 @@ export class ChatService {
 
         const responseParts = result.candidates[0].content?.parts || [];
         const textPartsRaw = responseParts.filter((p: any) => p.text).map((p: any) => p.text).join("\n");
-        console.log(`[ChatService] Raw Output: "${textPartsRaw.substring(0, 50)}..."`);
+        console.log(`[ChatService] Raw Output: "${textPartsRaw.substring(0, 100)}..."`);
         
         // 5. Parse tool calls
         const findJsonObjects = (text: string) => {
@@ -379,36 +379,30 @@ export class ChatService {
                     } catch (e) {}
                 }
             }
-
-            // Resolve any aliases and strip system labels
-            for (const [alias, meta] of Object.entries(aliasRegistry)) {
-                const md = `![Image](${this.getImageUrl(meta.filename)})`;
-                const regex = new RegExp("\\b" + alias + "\\b", "g");
-                finalDisplayContent = finalDisplayContent.replace(regex, md);
-                // Aggressive strip of context markers
-                finalDisplayContent = finalDisplayContent.split(`[Context: Image ${alias}]`).join("");
-                finalDisplayContent = finalDisplayContent.split(`[Context: Image ${md}]`).join("");
-            }
-
-            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent.trim()]);
-            const messageId = res.rows[0].id;
-            for (const att of allAttachments) {
-                await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
-            }
-            await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: finalDisplayContent.trim(), attachments: allAttachments, id: messageId };
-        } else {
-            for (const [alias, meta] of Object.entries(aliasRegistry)) {
-                const md = `![Image](${this.getImageUrl(meta.filename)})`;
-                const regex = new RegExp("\\b" + alias + "\\b", "g");
-                finalDisplayContent = finalDisplayContent.replace(regex, md);
-                finalDisplayContent = finalDisplayContent.split(`[Context: Image ${alias}]`).join("");
-                finalDisplayContent = finalDisplayContent.split(`[Context: Image ${md}]`).join("");
-            }
-            const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent.trim() || "No response received."]);
-            await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
-            return { response: finalDisplayContent.trim() || "No response received.", attachments: [], id: res.rows[0].id };
         }
+
+        // Post-process ALL content to resolve aliases and strip lingering metadata
+        for (const [alias, meta] of Object.entries(aliasRegistry)) {
+            const md = `![Image](${this.getImageUrl(meta.filename)})`;
+            // Boundary-aware alias replacement
+            const regex = new RegExp("\\b" + alias + "\\b", "g");
+            finalDisplayContent = finalDisplayContent.replace(regex, md);
+            // Aggressive strip of context markers (including any hallucinatory formatting)
+            const contextRegex = new RegExp("\\[Context:\\s*Image\\s*" + alias + "\\]", "gi");
+            finalDisplayContent = finalDisplayContent.replace(contextRegex, "");
+        }
+        
+        // Final cleanup of extra whitespace/newlines from stripped tags
+        finalDisplayContent = finalDisplayContent.replace(/\n\s*\n\s*\n/g, "\n\n").trim();
+
+        const res = await pool.query("INSERT INTO messages (conversation_id, role, content) VALUES ($1, $2, $3) RETURNING id", [conversationId, 'model', finalDisplayContent || "No response received."]);
+        const messageId = res.rows[0].id;
+        for (const att of allAttachments) {
+            await pool.query("INSERT INTO attachments (message_id, conversation_id, file_name, file_path, file_type, file_size) VALUES ($1, $2, $3, $4, $5, $6)", [messageId, conversationId, att.file_name, att.file_path, att.file_type, att.file_size]);
+        }
+        await pool.query("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [conversationId]);
+        return { response: finalDisplayContent || "No response received.", attachments: allAttachments, id: messageId };
+
     } catch (error) {
         console.error("[ChatService] FATAL Error:", error);
         throw error;
